@@ -1,0 +1,33 @@
+task_name: target_app_template
+adapter: target_app_template
+package_name: com.example.app
+launch_activity:
+startup_wait_seconds: 5
+output_dir: artifacts
+save_screenshot: true
+save_hierarchy: true
+save_visible_texts: true
+
+storage:
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    password: root
+    database: android_spider
+    charset: utf8mb4
+  sqlite_path: data/local_runs.sqlite3
+
+selectors:
+  home_root:
+    xpath: //*[@package='com.example.app']
+
+steps:
+  - action: wait
+    selector: home_root
+    timeout: 20
+    description: 等待目标应用首页出现
+  - action: capture
+    page_name: template_home
+    description: 采集首页内容
+

@@ -1,0 +1,37 @@
+task_name: settings_demo
+adapter: settings_demo
+package_name: com.android.settings
+launch_activity:
+startup_wait_seconds: 3
+output_dir: artifacts
+save_screenshot: true
+save_hierarchy: true
+save_visible_texts: true
+
+storage:
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    password: 123456
+    database: android_spider
+    charset: utf8mb4
+  sqlite_path: data/local_runs.sqlite3
+
+selectors:
+  settings_root:
+    xpath: //*[@package='com.android.settings']
+
+steps:
+  - action: wait
+    selector: settings_root
+    timeout: 15
+    description: 等待 Settings 页面加载完成
+  - action: swipe
+    direction: down
+    count: 1
+    description: 向下滑动一次以验证基础操作
+  - action: capture
+    page_name: settings_after_swipe
+    description: 导出截图、层级和可见文本
+

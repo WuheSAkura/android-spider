@@ -1,0 +1,150 @@
+import { useEffect, useState } from "react";
+
+import { api, AppSettings } from "@/lib/api";
+
+const EMPTY_SETTINGS: AppSettings = {
+  adb_path: "",
+  output_dir: "artifacts",
+  mysql_host: "127.0.0.1",
+  mysql_port: 3306,
+  mysql_user: "root",
+  mysql_password: "123456",
+  mysql_database: "android_spider",
+  mysql_charset: "utf8mb4",
+};
+
+export default function SettingsPage(): React.JSX.Element {
+  const [settings, setSettings] = useState<AppSettings>(EMPTY_SETTINGS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void loadSettings();
+  }, []);
+
+  async function loadSettings(): Promise<void> {
+    setLoading(true);
+    try {
+      const data = await api.getSettings();
+      setSettings(data);
+      setError("");
+    } catch (caughtError) {
+      setError((caughtError as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSave(): Promise<void> {
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const saved = await api.saveSettings(settings);
+      setSettings(saved);
+      setMessage("本地设置已保存。");
+    } catch (caughtError) {
+      const nextError = (caughtError as Error).message;
+      setError(nextError);
+      await window.desktopApi.showError("保存设置失败", nextError);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="section-heading">
+        <div>
+          <div className="eyebrow">Local Runtime Settings</div>
+          <h1>系统设置</h1>
+        </div>
+        <button className="primary-button" disabled={saving} onClick={() => void handleSave()}>
+          {saving ? "保存中..." : "保存设置"}
+        </button>
+      </section>
+
+      {message ? <div className="inline-success">{message}</div> : null}
+      {error ? <div className="inline-error">{error}</div> : null}
+
+      {loading ? (
+        <div className="panel empty-state">正在读取本地设置...</div>
+      ) : (
+        <div className="panel">
+          <div className="field-grid field-grid-two">
+            <label className="field">
+              <span>ADB 路径</span>
+              <input
+                value={settings.adb_path}
+                onChange={(event) => setSettings((current) => ({ ...current, adb_path: event.target.value }))}
+              />
+              <small>留空时走自动发现逻辑。</small>
+            </label>
+            <label className="field">
+              <span>产物目录</span>
+              <input
+                value={settings.output_dir}
+                onChange={(event) => setSettings((current) => ({ ...current, output_dir: event.target.value }))}
+              />
+              <small>任务截图、JSON、日志等产物的输出目录。</small>
+            </label>
+            <label className="field">
+              <span>MySQL Host</span>
+              <input
+                value={settings.mysql_host}
+                onChange={(event) => setSettings((current) => ({ ...current, mysql_host: event.target.value }))}
+              />
+            </label>
+            <label className="field">
+              <span>MySQL Port</span>
+              <input
+                type="number"
+                value={String(settings.mysql_port)}
+                onChange={(event) =>
+                  setSettings((current) => ({ ...current, mysql_port: Number(event.target.value) }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>MySQL User</span>
+              <input
+                value={settings.mysql_user}
+                onChange={(event) => setSettings((current) => ({ ...current, mysql_user: event.target.value }))}
+              />
+            </label>
+            <label className="field">
+              <span>MySQL Password</span>
+              <input
+                type="password"
+                value={settings.mysql_password}
+                onChange={(event) =>
+                  setSettings((current) => ({ ...current, mysql_password: event.target.value }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>MySQL Database</span>
+              <input
+                value={settings.mysql_database}
+                onChange={(event) =>
+                  setSettings((current) => ({ ...current, mysql_database: event.target.value }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>MySQL Charset</span>
+              <input
+                value={settings.mysql_charset}
+                onChange={(event) =>
+                  setSettings((current) => ({ ...current, mysql_charset: event.target.value }))
+                }
+              />
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

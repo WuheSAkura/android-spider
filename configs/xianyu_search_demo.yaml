@@ -1,0 +1,53 @@
+task_name: xianyu_search_demo
+adapter: xianyu_search
+package_name: com.taobao.idlefish
+launch_activity:
+startup_wait_seconds: 5
+output_dir: artifacts
+save_screenshot: true
+save_hierarchy: true
+save_visible_texts: true
+
+adapter_options:
+  search_keyword: iPhone15
+  max_items: 20
+  max_scrolls: 20
+  max_idle_rounds: 5
+  settle_seconds: 1.5
+  search_timeout: 20
+
+storage:
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    password: 123456
+    database: android_spider
+    charset: utf8mb4
+  sqlite_path: data/local_runs.sqlite3
+  csv_dir: exports
+
+selectors:
+  home_search_bar:
+    resource_id: com.taobao.idlefish:id/search_bar_layout
+  login_close:
+    resource_id: com.taobao.idlefish:id/ali_user_guide_close_layout
+  search_input_field:
+    xpath: //android.widget.EditText
+  search_input_back:
+    description: 返回, 返回按钮
+  search_results_list:
+    resource_id: com.taobao.idlefish:id/nested_recycler_view
+  results_back:
+    resource_id: com.taobao.idlefish:id/search_bar_back
+  detail_back:
+    description: 返回
+  detail_primary_action:
+    description: 我想要按钮
+  detail_secondary_action:
+    description: 按钮
+
+steps:
+  - action: capture
+    page_name: xianyu_placeholder
+    description: xianyu_search 适配器会接管流程，这个步骤仅用于满足基础配置结构

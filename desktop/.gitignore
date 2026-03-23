@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache/
+.pytest_cache/
+.idea/
+.vscode/
+artifacts/*
+!artifacts/.gitkeep
+logs/*
+!logs/.gitkeep
+data/*
+!data/.gitkeep
+

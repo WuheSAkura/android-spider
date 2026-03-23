@@ -1,0 +1,46 @@
+task_name: xiaohongshu_search_demo
+adapter: xiaohongshu_search
+package_name: com.xingin.xhs
+launch_activity:
+startup_wait_seconds: 5
+output_dir: artifacts
+save_screenshot: true
+save_hierarchy: true
+save_visible_texts: true
+
+adapter_options:
+  search_keyword: 穿搭
+  max_items: 20
+  max_scrolls: 20
+  max_idle_rounds: 5
+  max_comments_per_note: 20
+  detail_scroll_limit: 8
+  comment_scroll_limit: 10
+  settle_seconds: 0.75
+  search_timeout: 20
+
+storage:
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    password: 123456
+    database: android_spider
+    charset: utf8mb4
+  sqlite_path: data/local_runs.sqlite3
+  csv_dir: exports
+
+selectors:
+  home_search_entry:
+    description: 搜索
+  search_input_field:
+    xpath: //android.widget.EditText
+  search_submit:
+    text: 搜索
+  back_button:
+    description: 返回
+
+steps:
+  - action: capture
+    page_name: xiaohongshu_placeholder
+    description: xiaohongshu_search 适配器会接管完整流程，这个步骤仅用于满足基础配置结构
