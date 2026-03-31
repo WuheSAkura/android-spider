@@ -1,7 +1,11 @@
 import { HashRouter, Link, NavLink, Route, Routes } from "react-router-dom";
 
+import AnalysisRecordsPage from "@/pages/AnalysisRecordsPage";
 import DashboardPage from "@/pages/DashboardPage";
+import DictionaryPage from "@/pages/DictionaryPage";
+import FilesPage from "@/pages/FilesPage";
 import HistoryPage from "@/pages/HistoryPage";
+import JargonAnalysisPage from "@/pages/JargonAnalysisPage";
 import RunDetailPage from "@/pages/RunDetailPage";
 import SettingsPage from "@/pages/SettingsPage";
 
@@ -24,6 +28,18 @@ function Shell(): React.JSX.Element {
           <NavLink to="/history" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             运行历史
           </NavLink>
+          <NavLink to="/dictionary" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            黑话字典
+          </NavLink>
+          <NavLink to="/analysis" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            黑话研判
+          </NavLink>
+          <NavLink to="/analysis-records" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            研判记录
+          </NavLink>
+          <NavLink to="/files" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            本地文件
+          </NavLink>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             系统设置
           </NavLink>
@@ -41,6 +57,10 @@ function Shell(): React.JSX.Element {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/dictionary" element={<DictionaryPage />} />
+          <Route path="/analysis" element={<JargonAnalysisPage />} />
+          <Route path="/analysis-records" element={<AnalysisRecordsPage />} />
+          <Route path="/files" element={<FilesPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

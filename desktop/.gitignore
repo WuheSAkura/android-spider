@@ -13,4 +13,6 @@ logs/*
 !logs/.gitkeep
 data/*
 !data/.gitkeep
-
+# 忽略 Node.js 依赖
+node_modules/
+dist/

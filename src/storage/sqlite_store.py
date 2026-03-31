@@ -286,6 +286,8 @@ class SQLiteStore:
         for row in rows:
             results.append(
                 {
+                    "id": int(row["id"]),
+                    "local_run_id": int(row["local_run_id"]),
                     "item_index": int(row["item_index"]),
                     "platform": str(row["platform"]),
                     "record_type": str(row["record_type"]),
@@ -441,6 +443,7 @@ class SQLiteStore:
             """
         )
         self.connection.commit()
+        self._ensure_task_runs_schema()
 
         self._ensure_column("task_runs", "adapter", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("task_runs", "platform", "TEXT NOT NULL DEFAULT ''")
@@ -456,8 +459,184 @@ class SQLiteStore:
         self._ensure_column("task_runs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("task_runs", "created_at", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("task_runs", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        self._backfill_legacy_tracebacks()
 
         cursor.close()
+
+    def _ensure_task_runs_schema(self) -> None:
+        cursor = self.connection.cursor()
+        cursor.execute("PRAGMA table_info(task_runs)")
+        rows = cursor.fetchall()
+        cursor.close()
+        columns = {str(row["name"]): row for row in rows}
+        if not columns:
+            return
+
+        if self._task_runs_schema_is_compatible(columns):
+            return
+
+        self._rebuild_task_runs_table(columns)
+
+    @staticmethod
+    def _task_runs_schema_is_compatible(columns: dict[str, sqlite3.Row]) -> bool:
+        required_columns = {
+            "adapter",
+            "platform",
+            "package_name",
+            "run_mode",
+            "requested_at",
+            "log_path",
+            "config_json",
+            "result_json",
+            "mysql_run_id",
+            "items_count",
+            "comment_count",
+            "cancel_requested",
+            "created_at",
+            "updated_at",
+        }
+        if not required_columns.issubset(columns):
+            return False
+
+        def _notnull(name: str) -> int:
+            return int(columns[name]["notnull"] or 0)
+
+        def _default(name: str) -> str | None:
+            value = columns[name]["dflt_value"]
+            return None if value is None else str(value)
+
+        if _notnull("device_serial") != 1 or _default("device_serial") not in {"''", '""'}:
+            return False
+        if _notnull("requested_at") != 1 or _default("requested_at") not in {"''", '""'}:
+            return False
+        if _notnull("artifact_dir") != 1 or _default("artifact_dir") not in {"''", '""'}:
+            return False
+        if _notnull("log_path") != 1 or _default("log_path") not in {"''", '""'}:
+            return False
+        if _notnull("created_at") != 1 or _default("created_at") not in {"''", '""'}:
+            return False
+        if _notnull("updated_at") != 1 or _default("updated_at") not in {"''", '""'}:
+            return False
+        if _notnull("started_at") != 0:
+            return False
+        if _notnull("finished_at") != 0:
+            return False
+        if _default("error_message") is not None:
+            return False
+        return True
+
+    def _rebuild_task_runs_table(self, columns: dict[str, sqlite3.Row]) -> None:
+        existing_names = set(columns)
+        legacy_rows = self.connection.execute("SELECT * FROM task_runs ORDER BY id ASC").fetchall()
+        self.connection.execute("BEGIN")
+        try:
+            self.connection.execute("DROP TABLE IF EXISTS task_runs__migrated")
+            self.connection.execute(
+                """
+                CREATE TABLE task_runs__migrated (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_name TEXT NOT NULL,
+                    adapter TEXT NOT NULL DEFAULT '',
+                    platform TEXT NOT NULL DEFAULT '',
+                    package_name TEXT NOT NULL DEFAULT '',
+                    run_mode TEXT NOT NULL DEFAULT 'normal',
+                    status TEXT NOT NULL,
+                    device_serial TEXT NOT NULL DEFAULT '',
+                    requested_at TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NULL,
+                    finished_at TEXT NULL,
+                    artifact_dir TEXT NOT NULL DEFAULT '',
+                    log_path TEXT NOT NULL DEFAULT '',
+                    config_json TEXT NULL,
+                    result_json TEXT NULL,
+                    error_message TEXT NULL,
+                    mysql_run_id INTEGER NULL,
+                    items_count INTEGER NOT NULL DEFAULT 0,
+                    comment_count INTEGER NOT NULL DEFAULT 0,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            insert_rows = [self._build_task_runs_migration_row(row, existing_names) for row in legacy_rows]
+            if insert_rows:
+                self.connection.executemany(
+                    """
+                    INSERT INTO task_runs__migrated (
+                        id, task_name, adapter, platform, package_name, run_mode, status,
+                        device_serial, requested_at, started_at, finished_at, artifact_dir,
+                        log_path, config_json, result_json, error_message, mysql_run_id,
+                        items_count, comment_count, cancel_requested, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    insert_rows,
+                )
+            self.connection.execute("DROP TABLE task_runs")
+            self.connection.execute("ALTER TABLE task_runs__migrated RENAME TO task_runs")
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    @staticmethod
+    def _build_task_runs_migration_row(row: sqlite3.Row, existing_names: set[str]) -> tuple[Any, ...]:
+        def text_value(column_name: str, default: str = "") -> str:
+            if column_name not in existing_names:
+                return default
+            value = row[column_name]
+            return default if value is None else str(value)
+
+        def nullable_text_value(column_name: str) -> str | None:
+            if column_name not in existing_names:
+                return None
+            value = row[column_name]
+            if value in (None, ""):
+                return None
+            return str(value)
+
+        def int_value(column_name: str, default: int = 0) -> int:
+            if column_name not in existing_names:
+                return default
+            value = row[column_name]
+            if value in (None, ""):
+                return default
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        config_json = None
+        if "config_json" in existing_names and row["config_json"] not in (None, ""):
+            config_json = str(row["config_json"])
+        elif "traceback_text" in existing_names and row["traceback_text"] not in (None, ""):
+            config_json = json.dumps({"legacy_traceback_text": str(row["traceback_text"])}, ensure_ascii=False)
+
+        return (
+            int(row["id"]),
+            str(row["task_name"]),
+            text_value("adapter"),
+            text_value("platform"),
+            text_value("package_name"),
+            text_value("run_mode", "normal"),
+            str(row["status"]),
+            text_value("device_serial"),
+            text_value("requested_at"),
+            nullable_text_value("started_at"),
+            nullable_text_value("finished_at"),
+            text_value("artifact_dir"),
+            text_value("log_path"),
+            config_json,
+            str(row["result_json"]) if "result_json" in existing_names and row["result_json"] not in (None, "") else None,
+            nullable_text_value("error_message"),
+            int_value("mysql_run_id", default=0) if "mysql_run_id" in existing_names and row["mysql_run_id"] is not None else None,
+            int_value("items_count"),
+            int_value("comment_count"),
+            int_value("cancel_requested"),
+            text_value("created_at"),
+            text_value("updated_at"),
+        )
 
     def _ensure_column(self, table_name: str, column_name: str, column_type_sql: str) -> None:
         cursor = self.connection.cursor()
@@ -465,6 +644,39 @@ class SQLiteStore:
         columns = {str(row["name"]) for row in cursor.fetchall()}
         if column_name not in columns:
             cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type_sql}")
+            self.connection.commit()
+        cursor.close()
+
+    def _backfill_legacy_tracebacks(self) -> None:
+        cursor = self.connection.cursor()
+        cursor.execute(
+            """
+            SELECT id, artifact_dir
+            FROM task_runs
+            WHERE COALESCE(config_json, '') = ''
+              AND COALESCE(artifact_dir, '') != ''
+            """
+        )
+        rows = cursor.fetchall()
+
+        updates: list[tuple[str, int]] = []
+        for row in rows:
+            artifact_dir = Path(str(row["artifact_dir"]))
+            traceback_path = artifact_dir / "traceback.txt"
+            if not traceback_path.exists():
+                continue
+            traceback_text = traceback_path.read_text(encoding="utf-8", errors="ignore").strip()
+            if not traceback_text:
+                continue
+            updates.append(
+                (
+                    json.dumps({"legacy_traceback_text": traceback_text}, ensure_ascii=False),
+                    int(row["id"]),
+                )
+            )
+
+        if updates:
+            cursor.executemany("UPDATE task_runs SET config_json = ? WHERE id = ?", updates)
             self.connection.commit()
         cursor.close()
 

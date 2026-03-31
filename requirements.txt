@@ -3,3 +3,5 @@ uiautomator2>=3.2.8
 mysql-connector-python>=8.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
+openai>=1.66.3
+python-dotenv>=1.0.1

@@ -7,10 +7,15 @@ __pycache__/
 .pytest_cache/
 .idea/
 .vscode/
+.env
+.env.local
+.env.*.local
 artifacts/*
 !artifacts/.gitkeep
 logs/*
 !logs/.gitkeep
 data/*
 !data/.gitkeep
-
+# 忽略 Node.js 依赖
+node_modules/
+dist/

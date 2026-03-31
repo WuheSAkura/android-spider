@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import sys
 from pathlib import Path
@@ -10,6 +9,7 @@ from src.core.adb_manager import AdbManager
 from src.core.device_manager import DeviceManager
 from src.core.task_runner import TaskRunner
 from src.models.task_models import TaskConfig
+from src.utils.dependency_check import build_dependency_report
 from src.utils.logger import setup_logger
 
 
@@ -37,11 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def command_doctor(adb_path: str | None) -> int:
     logger = setup_logger("doctor")
-    dependencies = {
-        "yaml": _check_module("yaml"),
-        "uiautomator2": _check_module("uiautomator2"),
-        "mysql.connector": _check_module("mysql.connector"),
-    }
+    dependencies = build_dependency_report()
     device_manager = DeviceManager(AdbManager(adb_path))
     report = device_manager.build_doctor_report(dependencies)
 
@@ -108,14 +104,6 @@ def command_dump_page(output_dir: str, adb_path: str | None) -> int:
     result = runner.dump_current_page(Path(output_dir))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
-
-
-def _check_module(module_name: str) -> bool:
-    try:
-        importlib.import_module(module_name)
-    except ImportError:
-        return False
-    return True
 
 
 def main() -> int:

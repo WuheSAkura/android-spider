@@ -1,27 +1,14 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from "electron";
-import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
-
+"use strict";
+const electron = require("electron");
+const node_child_process = require("node:child_process");
+const node_fs = require("node:fs");
+const node_path = require("node:path");
 const SERVICE_PORT = 8765;
 const SERVICE_BASE_URL = `http://127.0.0.1:${SERVICE_PORT}`;
-
-let mainWindow: BrowserWindow | null = null;
-let serviceProcess: ChildProcessWithoutNullStreams | null = null;
-
-type ServiceRequest = {
-  method: string;
-  path: string;
-  body?: unknown;
-};
-
-type ServiceStartupState = {
-  failure: Error | null;
-  output: string;
-};
-
-function createWindow(): BrowserWindow {
-  const window = new BrowserWindow({
+let mainWindow = null;
+let serviceProcess = null;
+function createWindow() {
+  const window = new electron.BrowserWindow({
     width: 1420,
     height: 920,
     minWidth: 1200,
@@ -29,70 +16,54 @@ function createWindow(): BrowserWindow {
     backgroundColor: "#f4efe7",
     autoHideMenuBar: true,
     webPreferences: {
-      preload: join(__dirname, "../preload/index.js"),
+      preload: node_path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-    },
+      sandbox: false
+    }
   });
-
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    void window.loadFile(join(__dirname, "../renderer/index.html"));
+    void window.loadFile(node_path.join(__dirname, "../renderer/index.html"));
   }
-
   return window;
 }
-
-function getProjectRoot(): string {
-  return resolve(process.cwd(), "..");
+function getProjectRoot() {
+  return node_path.resolve(process.cwd(), "..");
 }
-
-function resolvePythonCommand(): { command: string; args: string[] } {
+function resolvePythonCommand() {
   const projectRoot = getProjectRoot();
-  const venvPython = resolve(projectRoot, ".venv", "Scripts", "python.exe");
-  if (existsSync(venvPython)) {
+  const venvPython = node_path.resolve(projectRoot, ".venv", "Scripts", "python.exe");
+  if (node_fs.existsSync(venvPython)) {
     return { command: venvPython, args: [] };
   }
   return { command: "python", args: [] };
 }
-
-function appendServiceOutput(current: string, chunk: string): string {
-  const maxLength = 4000;
+function appendServiceOutput(current, chunk) {
+  const maxLength = 4e3;
   const next = `${current}${chunk}`;
   if (next.length <= maxLength) {
     return next;
   }
   return next.slice(-maxLength);
 }
-
-function getRecentServiceOutput(output: string): string {
-  const lines = output
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0);
+function getRecentServiceOutput(output) {
+  const lines = output.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.length > 0);
   return lines.slice(-12).join("\n");
 }
-
-function buildServiceExitError(
-  exitCode: number | null,
-  signal: NodeJS.Signals | null,
-  output: string,
-): Error {
+function buildServiceExitError(exitCode, signal, output) {
   const exitReason = signal === null ? `退出码 ${exitCode ?? "未知"}` : `信号 ${signal}`;
   const recentOutput = getRecentServiceOutput(output);
   if (!recentOutput) {
     return new Error(`本地 Python 服务启动失败（${exitReason}）。`);
   }
-  return new Error(`本地 Python 服务启动失败（${exitReason}）。\n\n${recentOutput}`);
-}
+  return new Error(`本地 Python 服务启动失败（${exitReason}）。
 
-async function waitForServiceReady(
-  startedProcess: ChildProcessWithoutNullStreams,
-  startupState: ServiceStartupState,
-): Promise<void> {
-  const deadline = Date.now() + 15000;
+${recentOutput}`);
+}
+async function waitForServiceReady(startedProcess, startupState) {
+  const deadline = Date.now() + 15e3;
   while (Date.now() < deadline) {
     if (startupState.failure !== null) {
       throw startupState.failure;
@@ -106,7 +77,6 @@ async function waitForServiceReady(
         return;
       }
     } catch {
-      // ignore until timeout
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 400));
   }
@@ -114,36 +84,35 @@ async function waitForServiceReady(
   if (!recentOutput) {
     throw new Error("本地 Python 服务启动超时。");
   }
-  throw new Error(`本地 Python 服务启动超时。\n\n最近输出：\n${recentOutput}`);
-}
+  throw new Error(`本地 Python 服务启动超时。
 
-async function ensurePythonService(): Promise<void> {
+最近输出：
+${recentOutput}`);
+}
+async function ensurePythonService() {
   if (serviceProcess !== null) {
     return;
   }
-
   const projectRoot = getProjectRoot();
   const pythonCommand = resolvePythonCommand();
   const args = [
     ...pythonCommand.args,
-    resolve(projectRoot, "main.py"),
+    node_path.resolve(projectRoot, "main.py"),
     "serve",
     "--host",
     "127.0.0.1",
     "--port",
-    String(SERVICE_PORT),
+    String(SERVICE_PORT)
   ];
-
-  const startedProcess = spawn(pythonCommand.command, args, {
+  const startedProcess = node_child_process.spawn(pythonCommand.command, args, {
     cwd: projectRoot,
-    stdio: "pipe",
+    stdio: "pipe"
   });
-  const startupState: ServiceStartupState = {
+  const startupState = {
     failure: null,
-    output: "",
+    output: ""
   };
   serviceProcess = startedProcess;
-
   startedProcess.stdout.on("data", (chunk) => {
     startupState.output = appendServiceOutput(startupState.output, String(chunk));
     process.stdout.write(`[python] ${String(chunk)}`);
@@ -164,11 +133,9 @@ async function ensurePythonService(): Promise<void> {
       serviceProcess = null;
     }
   });
-
   await waitForServiceReady(startedProcess, startupState);
 }
-
-async function stopPythonService(): Promise<void> {
+async function stopPythonService() {
   if (serviceProcess === null) {
     return;
   }
@@ -176,91 +143,76 @@ async function stopPythonService(): Promise<void> {
   serviceProcess = null;
   currentProcess.kill();
 }
-
-async function proxyRequest(request: ServiceRequest): Promise<{
-  ok: boolean;
-  status: number;
-  data: unknown;
-  error: string;
-}> {
+async function proxyRequest(request) {
   await ensurePythonService();
   const response = await fetch(`${SERVICE_BASE_URL}${request.path}`, {
     method: request.method,
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/json"
     },
-    body: request.body === undefined ? undefined : JSON.stringify(request.body),
+    body: request.body === void 0 ? void 0 : JSON.stringify(request.body)
   });
-
   const rawText = await response.text();
-  let data: unknown = null;
+  let data = null;
   if (rawText) {
     try {
-      data = JSON.parse(rawText) as unknown;
+      data = JSON.parse(rawText);
     } catch {
       data = rawText;
     }
   }
-
   let error = "";
   if (!response.ok) {
-    if (data !== null && typeof data === "object" && "detail" in (data as Record<string, unknown>)) {
-      error = String((data as Record<string, unknown>).detail ?? "");
+    if (data !== null && typeof data === "object" && "detail" in data) {
+      error = String(data.detail ?? "");
     } else {
       error = rawText || `HTTP ${response.status}`;
     }
   }
-
   return {
     ok: response.ok,
     status: response.status,
     data,
-    error,
+    error
   };
 }
-
-function registerIpcHandlers(): void {
-  ipcMain.handle("service:request", async (_event, request: ServiceRequest) => proxyRequest(request));
-  ipcMain.handle("service:getBaseUrl", () => SERVICE_BASE_URL);
-  ipcMain.handle("system:openPath", async (_event, targetPath: string) => shell.openPath(targetPath));
-  ipcMain.handle("system:showError", async (_event, title: string, content: string) => {
+function registerIpcHandlers() {
+  electron.ipcMain.handle("service:request", async (_event, request) => proxyRequest(request));
+  electron.ipcMain.handle("service:getBaseUrl", () => SERVICE_BASE_URL);
+  electron.ipcMain.handle("system:openPath", async (_event, targetPath) => electron.shell.openPath(targetPath));
+  electron.ipcMain.handle("system:showError", async (_event, title, content) => {
     if (mainWindow !== null) {
-      await dialog.showMessageBox(mainWindow, {
+      await electron.dialog.showMessageBox(mainWindow, {
         type: "error",
         title,
         message: title,
-        detail: content,
+        detail: content
       });
     }
   });
 }
-
-app.whenReady().then(async () => {
+electron.app.whenReady().then(async () => {
   registerIpcHandlers();
-
   try {
     await ensurePythonService();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await dialog.showMessageBox({
+    await electron.dialog.showMessageBox({
       type: "error",
       title: "服务启动失败",
       message: "本地 Python 服务未能启动",
-      detail: message,
+      detail: message
     });
-    app.quit();
+    electron.app.quit();
     return;
   }
-
   mainWindow = createWindow();
 });
-
-app.on("window-all-closed", () => {
+electron.app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    app.quit();
+    electron.app.quit();
   }
 });
-
-app.on("before-quit", () => {
+electron.app.on("before-quit", () => {
   void stopPythonService();
 });

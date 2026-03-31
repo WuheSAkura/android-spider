@@ -10,6 +10,10 @@ class DependencyError(ProjectError):
     """依赖缺失或不可用。"""
 
 
+class StorageError(ProjectError):
+    """本地存储或迁移异常。"""
+
+
 class DeviceNotFoundError(ProjectError):
     """未找到可用设备。"""
 
