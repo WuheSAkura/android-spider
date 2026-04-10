@@ -207,7 +207,7 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
                     查看详情
                   </button>
                   {item.link ? (
-                    <button className="text-link-button" onClick={() => void api.openPath(item.link)}>
+                    <button className="text-link-button" onClick={() => void api.openExternal(item.link)}>
                       打开链接
                     </button>
                   ) : null}

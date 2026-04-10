@@ -27,9 +27,12 @@ class AnalysisStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database_path, check_same_thread=False)
+        self.connection = sqlite3.connect(self.database_path, check_same_thread=False, timeout=30)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA synchronous = NORMAL")
+        self.connection.execute("PRAGMA busy_timeout = 30000")
         self._ensure_tables()
 
     def list_keyword_categories(self) -> list[dict[str, Any]]:
@@ -570,7 +573,12 @@ class AnalysisStore:
         cursor.close()
         return [self._row_to_jargon_result(row) for row in rows]
 
-    def get_record_match_map(self, *, source_type: str, record_ids: list[int]) -> tuple[dict[int, list[dict[str, Any]]], set[int]]:
+    def get_record_match_details(
+        self,
+        *,
+        source_type: str,
+        record_ids: list[int],
+    ) -> tuple[dict[int, list[dict[str, Any]]], set[int]]:
         if not record_ids:
             return {}, set()
 
@@ -582,16 +590,25 @@ class AnalysisStore:
                 jargon_analysis_results.source_record_id,
                 jargon_analysis_results.is_match,
                 jargon_analysis_results.confidence,
+                jargon_analysis_results.reason,
                 jargon_analysis_tasks.id AS task_id,
                 jargon_analysis_tasks.keyword_id,
                 jargon_analysis_tasks.keyword_name_snapshot,
-                jargon_analysis_tasks.keyword_meaning_snapshot
+                jargon_analysis_tasks.keyword_meaning_snapshot,
+                jargon_analysis_tasks.category_name_snapshot,
+                jargon_analysis_tasks.subcategory_name_snapshot,
+                jargon_analysis_tasks.created_at AS task_created_at,
+                jargon_analysis_tasks.completed_at AS task_completed_at
             FROM jargon_analysis_results
             JOIN jargon_analysis_tasks
                 ON jargon_analysis_tasks.id = jargon_analysis_results.task_id
             WHERE jargon_analysis_results.source_type = ?
               AND jargon_analysis_results.source_record_id IN ({placeholders})
               AND jargon_analysis_tasks.status = 'completed'
+            ORDER BY
+                jargon_analysis_results.source_record_id ASC,
+                jargon_analysis_results.confidence DESC,
+                jargon_analysis_results.id DESC
             """,
             (source_type, *record_ids),
         )
@@ -615,6 +632,11 @@ class AnalysisStore:
                     "keyword": str(row["keyword_name_snapshot"] or ""),
                     "meaning": str(row["keyword_meaning_snapshot"] or ""),
                     "confidence": float(row["confidence"] or 0),
+                    "reason": str(row["reason"] or ""),
+                    "category_name": str(row["category_name_snapshot"] or ""),
+                    "subcategory_name": str(row["subcategory_name_snapshot"] or ""),
+                    "task_created_at": str(row["task_created_at"] or ""),
+                    "task_completed_at": str(row["task_completed_at"] or ""),
                 }
             )
 
@@ -632,6 +654,86 @@ class AnalysisStore:
             )
 
         return matched_map, analyzed_ids
+
+    def get_record_match_map(self, *, source_type: str, record_ids: list[int]) -> tuple[dict[int, list[dict[str, Any]]], set[int]]:
+        detailed_map, analyzed_ids = self.get_record_match_details(source_type=source_type, record_ids=record_ids)
+        matched_map = {
+            record_id: [
+                {
+                    "task_id": int(item["task_id"]),
+                    "keyword_id": int(item["keyword_id"] or 0),
+                    "keyword": str(item["keyword"] or ""),
+                    "meaning": str(item["meaning"] or ""),
+                    "confidence": float(item["confidence"] or 0),
+                }
+                for item in items
+            ]
+            for record_id, items in detailed_map.items()
+        }
+        return matched_map, analyzed_ids
+
+    def count_matched_source_records(
+        self,
+        *,
+        source_type: str,
+        task_id: int | None,
+        search: str | None,
+        keyword_id: int | None,
+        category_id: int | None,
+        subcategory_id: int | None,
+        min_confidence: float | None,
+    ) -> int:
+        where_sql, params = self._build_matched_record_where(
+            source_type=source_type,
+            task_id=task_id,
+            search=search,
+            keyword_id=keyword_id,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            min_confidence=min_confidence,
+        )
+        cursor = self.connection.cursor()
+        cursor.execute(f"SELECT COUNT(*) AS total FROM collected_records {where_sql}", params)
+        row = cursor.fetchone()
+        cursor.close()
+        return int(row["total"] or 0) if row is not None else 0
+
+    def list_matched_source_records(
+        self,
+        *,
+        source_type: str,
+        task_id: int | None,
+        search: str | None,
+        keyword_id: int | None,
+        category_id: int | None,
+        subcategory_id: int | None,
+        min_confidence: float | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        where_sql, params = self._build_matched_record_where(
+            source_type=source_type,
+            task_id=task_id,
+            search=search,
+            keyword_id=keyword_id,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            min_confidence=min_confidence,
+        )
+        cursor = self.connection.cursor()
+        cursor.execute(
+            f"""
+            SELECT *
+            FROM collected_records
+            {where_sql}
+            ORDER BY local_run_id DESC, item_index ASC, id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [self._row_to_collected_record(row) for row in rows]
 
     def list_analysis_sources(self) -> list[dict[str, Any]]:
         cursor = self.connection.cursor()
@@ -790,6 +892,20 @@ class AnalysisStore:
         rows = cursor.fetchall()
         cursor.close()
         return [self._row_to_collected_record(row) for row in rows]
+
+    def get_collected_record(self, record_id: int) -> dict[str, Any] | None:
+        cursor = self.connection.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM collected_records
+            WHERE id = ?
+            """,
+            (record_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return self._row_to_collected_record(row) if row is not None else None
 
     def get_run(self, run_id: int) -> dict[str, Any] | None:
         cursor = self.connection.cursor()
@@ -983,6 +1099,71 @@ class AnalysisStore:
                 """
             )
             params.append(source_type)
+
+        return f"WHERE {' AND '.join(conditions)}", params
+
+    def _build_matched_record_where(
+        self,
+        *,
+        source_type: str,
+        task_id: int | None,
+        search: str | None,
+        keyword_id: int | None,
+        category_id: int | None,
+        subcategory_id: int | None,
+        min_confidence: float | None,
+    ) -> tuple[str, list[Any]]:
+        platform, record_type = self._resolve_source_filters(source_type)
+        conditions = ["collected_records.platform = ?", "collected_records.record_type = ?"]
+        params: list[Any] = [platform, record_type]
+
+        if task_id is not None:
+            conditions.append("collected_records.local_run_id = ?")
+            params.append(task_id)
+
+        if search:
+            like_pattern = f"%{str(search).strip()}%"
+            conditions.append("(COALESCE(collected_records.title, '') LIKE ? OR COALESCE(collected_records.content_text, '') LIKE ?)")
+            params.extend([like_pattern, like_pattern])
+
+        match_conditions = [
+            "jargon_analysis_results.source_record_id = collected_records.id",
+            "jargon_analysis_results.source_type = ?",
+            "jargon_analysis_results.is_match = 1",
+            "jargon_analysis_tasks.status = 'completed'",
+        ]
+        match_params: list[Any] = [source_type]
+
+        if keyword_id is not None:
+            match_conditions.append("jargon_analysis_tasks.keyword_id = ?")
+            match_params.append(keyword_id)
+
+        if category_id is not None:
+            match_conditions.append("keywords.category_id = ?")
+            match_params.append(category_id)
+
+        if subcategory_id is not None:
+            match_conditions.append("keywords.subcategory_id = ?")
+            match_params.append(subcategory_id)
+
+        if min_confidence is not None:
+            match_conditions.append("jargon_analysis_results.confidence >= ?")
+            match_params.append(float(min_confidence))
+
+        conditions.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM jargon_analysis_results
+                JOIN jargon_analysis_tasks
+                    ON jargon_analysis_tasks.id = jargon_analysis_results.task_id
+                LEFT JOIN keywords
+                    ON keywords.id = jargon_analysis_tasks.keyword_id
+                WHERE {' AND '.join(match_conditions)}
+            )
+            """
+        )
+        params.extend(match_params)
 
         return f"WHERE {' AND '.join(conditions)}", params
 

@@ -25,10 +25,11 @@ class PageCapture:
 class ArtifactManager:
     """负责本次任务运行的目录和文件写入。"""
 
-    def __init__(self, output_root: Path, task_name: str) -> None:
+    def __init__(self, output_root: Path, task_name: str, *, run_suffix: str | None = None) -> None:
         self.output_root = output_root
         self.task_name = task_name
-        self.run_dir = self.output_root / f"{format_fs_timestamp(now_local())}_{self._sanitize_name(task_name)}"
+        suffix = f"_{self._sanitize_name(run_suffix)}" if run_suffix else ""
+        self.run_dir = self.output_root / f"{format_fs_timestamp(now_local())}_{self._sanitize_name(task_name)}{suffix}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
     @property

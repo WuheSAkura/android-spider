@@ -1,4 +1,4 @@
-import { DeviceInfo, TaskTemplate } from "@/lib/api";
+import { DeviceInfo, TaskTemplate, formatStatus } from "@/lib/api";
 
 type TaskFormProps = {
   templates: TaskTemplate[];
@@ -28,6 +28,13 @@ export function TaskForm(props: TaskFormProps): React.JSX.Element {
   } = props;
 
   const selectedTemplate = templates.find((item) => item.template_id === selectedTemplateId) ?? null;
+  const onlineDevices = devices.filter((device) => device.state === "device");
+  const idleDeviceCount = onlineDevices.filter((device) => !device.busy).length;
+  const selectedDevice =
+    selectedDeviceSerial === "" ? null : onlineDevices.find((device) => device.serial === selectedDeviceSerial) ?? null;
+  const canRun =
+    !submitting &&
+    (selectedDeviceSerial === "" ? idleDeviceCount > 0 : selectedDevice !== null && !selectedDevice.busy);
 
   return (
     <div className="panel">
@@ -54,15 +61,15 @@ export function TaskForm(props: TaskFormProps): React.JSX.Element {
         <label className="field">
           <span>目标设备</span>
           <select value={selectedDeviceSerial} onChange={(event) => onDeviceChange(event.target.value)}>
-            <option value="">默认在线设备</option>
-            {devices
-              .filter((device) => device.state === "device")
-              .map((device) => (
-                <option key={device.serial} value={device.serial}>
-                  {device.model || "未知设备"} / {device.serial}
-                </option>
-              ))}
+            <option value="">自动分配空闲设备</option>
+            {onlineDevices.map((device) => (
+              <option key={device.serial} value={device.serial} disabled={device.busy}>
+                {device.model || "未知设备"} / {device.serial}
+                {device.busy ? `（任务 #${device.active_run_id ?? "?"} ${formatStatus(device.active_run_status || "running")}）` : ""}
+              </option>
+            ))}
           </select>
+          <small>{idleDeviceCount > 0 ? `当前空闲设备 ${idleDeviceCount} 台` : "当前没有空闲设备"}</small>
         </label>
       </div>
 
@@ -108,10 +115,10 @@ export function TaskForm(props: TaskFormProps): React.JSX.Element {
       ) : null}
 
       <div className="action-row">
-        <button className="ghost-button" disabled={submitting} onClick={() => onRun("light_smoke")}>
+        <button className="ghost-button" disabled={!canRun} onClick={() => onRun("light_smoke")}>
           {submitting ? "提交中..." : "轻量试跑"}
         </button>
-        <button className="primary-button" disabled={submitting} onClick={() => onRun("normal")}>
+        <button className="primary-button" disabled={!canRun} onClick={() => onRun("normal")}>
           {submitting ? "提交中..." : "正式采集"}
         </button>
       </div>

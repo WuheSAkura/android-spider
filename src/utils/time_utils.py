@@ -17,5 +17,4 @@ def format_datetime(value: datetime | None) -> str:
 def format_fs_timestamp(value: datetime | None = None) -> str:
     """格式化为适合文件夹命名的时间戳。"""
     current = value or now_local()
-    return current.strftime("%Y-%m-%d_%H%M%S")
-
+    return current.strftime("%Y-%m-%d_%H%M%S_%f")

@@ -51,6 +51,9 @@ class DeviceResponse(BaseModel):
     state: str
     android_version: str | None = None
     model: str | None = None
+    busy: bool = False
+    active_run_id: int | None = None
+    active_run_status: str = ""
 
 
 class DoctorResponse(BaseModel):
@@ -294,6 +297,68 @@ class JargonTaskResultsResponse(BaseModel):
     items: list[JargonTaskResultItemResponse] = Field(default_factory=list)
 
 
+class HitTracingMatchResponse(BaseModel):
+    task_id: int
+    keyword_id: int
+    keyword: str
+    meaning: str
+    confidence: float
+    reason: str = ""
+    category_name: str = ""
+    subcategory_name: str = ""
+    task_created_at: str = ""
+    task_completed_at: str = ""
+
+
+class HitTracingRecordSummaryResponse(BaseModel):
+    id: int
+    local_run_id: int
+    item_index: int
+    platform: str
+    record_type: str
+    source_task_id: int
+    source_label: str = ""
+    title: str = ""
+    content: str = ""
+    image_url: str = ""
+    price: str | float | int | None = None
+    price_label: str = ""
+    link: str = ""
+    created_at: str = ""
+    match_count: int = 0
+    top_confidence: float = 0
+    matches: list[HitTracingMatchResponse] = Field(default_factory=list)
+    want_count: int | None = None
+    view_count: int | None = None
+    seller_name: str = ""
+    seller_region: str = ""
+    author: str = ""
+    publish_time: str = ""
+    likes: int = 0
+    collects: int = 0
+    comment_count: int = 0
+    topics: list[str] = Field(default_factory=list)
+    ip_location: str = ""
+
+
+class HitTracingRecordListResponse(BaseModel):
+    items: list[HitTracingRecordSummaryResponse] = Field(default_factory=list)
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+
+
+class HitTracingRecordDetailResponse(HitTracingRecordSummaryResponse):
+    author_name: str = ""
+    author_id: str = ""
+    location_text: str = ""
+    published_text: str = ""
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
+    raw_visible_texts: list[str] = Field(default_factory=list)
+
+
 class FileEntryResponse(BaseModel):
     name: str
     path: str
@@ -306,3 +371,7 @@ class FileEntryResponse(BaseModel):
 
 class FileDeleteRequest(BaseModel):
     path: str
+
+
+class FileBatchDeleteRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list)

@@ -3,6 +3,9 @@ export type DeviceInfo = {
   state: string;
   android_version: string | null;
   model: string | null;
+  busy: boolean;
+  active_run_id: number | null;
+  active_run_status: string;
 };
 
 export type TaskTemplateField = {
@@ -218,6 +221,60 @@ export type JargonTaskResultItem = {
   record: JargonSourceRecord;
 };
 
+export type HitTracingMatch = {
+  task_id: number;
+  keyword_id: number;
+  keyword: string;
+  meaning: string;
+  confidence: number;
+  reason: string;
+  category_name: string;
+  subcategory_name: string;
+  task_created_at: string;
+  task_completed_at: string;
+};
+
+export type HitTracingRecordSummary = {
+  id: number;
+  local_run_id: number;
+  item_index: number;
+  platform: string;
+  record_type: string;
+  source_task_id: number;
+  source_label: string;
+  title: string;
+  content: string;
+  image_url: string;
+  price: string | number | null;
+  price_label: string;
+  link: string;
+  created_at: string;
+  match_count: number;
+  top_confidence: number;
+  matches: HitTracingMatch[];
+  want_count?: number | null;
+  view_count?: number | null;
+  seller_name?: string;
+  seller_region?: string;
+  author?: string;
+  publish_time?: string;
+  likes?: number;
+  collects?: number;
+  comment_count?: number;
+  topics?: string[];
+  ip_location?: string;
+};
+
+export type HitTracingRecordDetail = HitTracingRecordSummary & {
+  author_name: string;
+  author_id: string;
+  location_text: string;
+  published_text: string;
+  metrics: Record<string, unknown>;
+  extra: Record<string, unknown>;
+  raw_visible_texts: string[];
+};
+
 export type PaginatedResult<T> = {
   items: T[];
   page: number;
@@ -332,9 +389,25 @@ export const api = {
     matched_only?: boolean;
   }) =>
     request<PaginatedResult<JargonSourceRecord>>("GET", `/api/jargon-analysis/records${buildQuery(params)}`),
+  listHitTracingRecords: (params: {
+    source_type: JargonSourceType;
+    page?: number;
+    page_size?: number;
+    task_id?: number | null;
+    search?: string;
+    keyword_id?: number | null;
+    category_id?: number | null;
+    subcategory_id?: number | null;
+    min_confidence?: number | null;
+  }) =>
+    request<PaginatedResult<HitTracingRecordSummary>>("GET", `/api/jargon-analysis/matches${buildQuery(params)}`),
+  getHitTracingRecord: (recordId: number) =>
+    request<HitTracingRecordDetail>("GET", `/api/jargon-analysis/matches/${recordId}`),
   listFiles: () => request<FileEntry[]>("GET", "/api/files"),
   deleteFile: (path: string) => request<void>("DELETE", "/api/files", { path }),
+  deleteFiles: (paths: string[]) => request<void>("POST", "/api/files/batch-delete", { paths }),
   openPath: (targetPath: string) => window.desktopApi.openPath(targetPath),
+  openExternal: (targetUrl: string) => window.desktopApi.openExternal(targetUrl),
 };
 
 export const ACTIVE_STATUSES = new Set(["pending", "running", "cancel_requested"]);

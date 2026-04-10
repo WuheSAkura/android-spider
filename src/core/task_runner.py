@@ -48,7 +48,11 @@ class TaskRunner:
         driver: AndroidDriver | None = None
 
         try:
-            artifacts = ArtifactManager(self.task_config.output_dir, self.task_config.task_name)
+            artifacts = ArtifactManager(
+                self.task_config.output_dir,
+                self.task_config.task_name,
+                run_suffix=f"run_{self.local_run_id}" if self.local_run_id is not None else None,
+            )
             logger = setup_logger(f"task_runner.{self.task_config.task_name}", artifacts.log_file)
             sqlite_store = SQLiteStore(self.task_config.storage.sqlite_path)
             if self.local_run_id is not None:

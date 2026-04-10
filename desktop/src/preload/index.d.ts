@@ -11,6 +11,7 @@ declare global {
       }>;
       getBaseUrl: () => Promise<string>;
       openPath: (targetPath: string) => Promise<string>;
+      openExternal: (targetUrl: string) => Promise<void>;
       showError: (title: string, content: string) => Promise<void>;
     };
   }

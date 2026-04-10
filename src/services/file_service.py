@@ -39,14 +39,17 @@ class FileService:
         return items
 
     def delete_file(self, target_path: str) -> None:
-        path = Path(target_path).resolve()
-        if not path.exists():
-            raise FileNotFoundError("文件不存在")
-        if not path.is_file():
-            raise IsADirectoryError("当前仅支持删除文件")
-        if not any(self._is_relative_to(path, root.resolve()) for root in self.allowed_roots):
-            raise PermissionError("禁止删除输出目录之外的文件")
+        path = self._validate_file_path(target_path)
         path.unlink()
+
+    def delete_files(self, target_paths: list[str]) -> None:
+        if not target_paths:
+            raise ValueError("请选择至少一个文件")
+
+        # 先统一校验，确保不会删到一半失败。
+        paths = [self._validate_file_path(target_path) for target_path in target_paths]
+        for path in paths:
+            path.unlink()
 
     @staticmethod
     def _format_mtime(timestamp: float) -> str:
@@ -68,6 +71,16 @@ class FileService:
         if suffix == ".xml":
             return "xml"
         return "file"
+
+    def _validate_file_path(self, target_path: str) -> Path:
+        path = Path(target_path).resolve()
+        if not path.exists():
+            raise FileNotFoundError("文件不存在")
+        if not path.is_file():
+            raise IsADirectoryError("当前仅支持删除文件")
+        if not any(self._is_relative_to(path, root.resolve()) for root in self.allowed_roots):
+            raise PermissionError("禁止删除输出目录之外的文件")
+        return path
 
     @staticmethod
     def _is_relative_to(path: Path, root: Path) -> bool:

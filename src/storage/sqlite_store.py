@@ -19,8 +19,9 @@ class SQLiteStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database_path, check_same_thread=False)
+        self.connection = sqlite3.connect(self.database_path, check_same_thread=False, timeout=30)
         self.connection.row_factory = sqlite3.Row
+        self._configure_connection()
         self._ensure_tables()
 
     def get_setting(self, key: str) -> str | None:
@@ -60,6 +61,7 @@ class SQLiteStore:
         platform: str,
         package_name: str,
         run_mode: str,
+        device_serial: str,
         config_json: dict[str, Any],
     ) -> int:
         cursor = self.connection.cursor()
@@ -67,9 +69,9 @@ class SQLiteStore:
             """
             INSERT INTO task_runs (
                 task_name, adapter, platform, package_name, run_mode, status,
-                requested_at, config_json, created_at, updated_at
+                device_serial, requested_at, config_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_name,
@@ -78,6 +80,7 @@ class SQLiteStore:
                 package_name,
                 run_mode,
                 "pending",
+                device_serial,
                 format_datetime(None),
                 json.dumps(config_json, ensure_ascii=False),
                 format_datetime(None),
@@ -308,7 +311,16 @@ class SQLiteStore:
         return results
 
     def get_active_run(self) -> dict[str, Any] | None:
+        active_runs = self.list_active_runs(limit=1)
+        return active_runs[0] if active_runs else None
+
+    def list_active_runs(self, limit: int | None = None) -> list[dict[str, Any]]:
         placeholders = ", ".join("?" for _ in ACTIVE_RUN_STATUSES)
+        limit_sql = ""
+        params: list[Any] = list(ACTIVE_RUN_STATUSES)
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(limit)
         cursor = self.connection.cursor()
         cursor.execute(
             f"""
@@ -316,13 +328,13 @@ class SQLiteStore:
             FROM task_runs
             WHERE status IN ({placeholders})
             ORDER BY id DESC
-            LIMIT 1
+            {limit_sql}
             """,
-            ACTIVE_RUN_STATUSES,
+            params,
         )
-        row = cursor.fetchone()
+        rows = cursor.fetchall()
         cursor.close()
-        return self._row_to_run_summary(row) if row is not None else None
+        return [self._row_to_run_summary(row) for row in rows]
 
     def recover_interrupted_runs(self) -> int:
         placeholders = ", ".join("?" for _ in ACTIVE_RUN_STATUSES)
@@ -360,6 +372,7 @@ class SQLiteStore:
             platform="unknown",
             package_name="",
             run_mode="normal",
+            device_serial=device_serial,
             config_json={"traceback_text": traceback_text},
         )
         self.mark_run_started(run_id, started_at=started_at, log_path="")
@@ -378,6 +391,12 @@ class SQLiteStore:
 
     def close(self) -> None:
         self.connection.close()
+
+    def _configure_connection(self) -> None:
+        self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA synchronous = NORMAL")
+        self.connection.execute("PRAGMA busy_timeout = 30000")
 
     def _ensure_tables(self) -> None:
         cursor = self.connection.cursor()

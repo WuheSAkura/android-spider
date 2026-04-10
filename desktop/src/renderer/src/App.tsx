@@ -5,6 +5,7 @@ import DashboardPage from "@/pages/DashboardPage";
 import DictionaryPage from "@/pages/DictionaryPage";
 import FilesPage from "@/pages/FilesPage";
 import HistoryPage from "@/pages/HistoryPage";
+import HitTracingPage from "@/pages/HitTracingPage";
 import JargonAnalysisPage from "@/pages/JargonAnalysisPage";
 import RunDetailPage from "@/pages/RunDetailPage";
 import SettingsPage from "@/pages/SettingsPage";
@@ -37,6 +38,9 @@ function Shell(): React.JSX.Element {
           <NavLink to="/analysis-records" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             研判记录
           </NavLink>
+          <NavLink to="/hit-tracing" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            命中溯源
+          </NavLink>
           <NavLink to="/files" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             本地文件
           </NavLink>
@@ -46,7 +50,7 @@ function Shell(): React.JSX.Element {
         </nav>
 
         <div className="sidebar-footnote">
-          <div>当前版本先聚焦单任务串行。</div>
+          <div>当前版本支持多设备并行，单设备同一时间只运行 1 个任务。</div>
           <Link to="/history" className="text-link">
             查看最近任务
           </Link>
@@ -60,6 +64,7 @@ function Shell(): React.JSX.Element {
           <Route path="/dictionary" element={<DictionaryPage />} />
           <Route path="/analysis" element={<JargonAnalysisPage />} />
           <Route path="/analysis-records" element={<AnalysisRecordsPage />} />
+          <Route path="/hit-tracing" element={<HitTracingPage />} />
           <Route path="/files" element={<FilesPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />

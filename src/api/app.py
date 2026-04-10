@@ -11,8 +11,11 @@ from src.api.schemas import (
     ArtifactResponse,
     DeviceResponse,
     DoctorResponse,
+    FileBatchDeleteRequest,
     FileDeleteRequest,
     FileEntryResponse,
+    HitTracingRecordDetailResponse,
+    HitTracingRecordListResponse,
     JargonAnalysisCreateRequest,
     JargonSourceDatasetResponse,
     JargonSourceRecordListResponse,
@@ -24,6 +27,7 @@ from src.api.schemas import (
     KeywordCategoryUpdatePayload,
     KeywordCreatePayload,
     KeywordResponse,
+    KeywordUpdatePayload,
     KeywordSubcategoryCreatePayload,
     KeywordSubcategoryResponse,
     KeywordSubcategoryUpdatePayload,
@@ -83,13 +87,15 @@ def get_doctor_report() -> DoctorResponse:
     device_manager = DeviceManager(adb_manager)
     dependencies = build_dependency_report()
     report = device_manager.build_doctor_report(dependencies)
+    device_responses = _to_device_responses(report.devices)
+    default_idle_device = next((item for item in device_responses if item.state == "device" and not item.busy), None)
     return DoctorResponse(
         adb_available=report.adb_available,
         adb_version=report.adb_version,
         adb_path=report.adb_path,
         dependencies=report.dependencies,
-        devices=[_to_device_response(device) for device in report.devices],
-        default_device_serial=report.default_device.serial if report.default_device is not None else None,
+        devices=device_responses,
+        default_device_serial=default_idle_device.serial if default_idle_device is not None else None,
     )
 
 
@@ -98,7 +104,7 @@ def list_devices() -> list[DeviceResponse]:
     settings = settings_service.get_settings()
     adb_manager = AdbManager(settings.adb_path or None)
     device_manager = DeviceManager(adb_manager)
-    return [_to_device_response(device) for device in device_manager.discover_devices()]
+    return _to_device_responses(device_manager.discover_devices())
 
 
 @app.get("/api/task-templates", response_model=list[TaskTemplateResponse])
@@ -133,6 +139,8 @@ def create_run(payload: RunCreateRequest) -> RunSummaryResponse:
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (StorageError, sqlite3.IntegrityError) as exc:
@@ -382,6 +390,43 @@ def list_analysis_records(
     return JargonSourceRecordListResponse(**data)
 
 
+@app.get("/api/jargon-analysis/matches", response_model=HitTracingRecordListResponse)
+def list_matched_records(
+    source_type: str = Query(..., pattern="^(xianyu|xhs)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    task_id: int | None = Query(default=None, ge=1),
+    search: str | None = Query(default=None),
+    keyword_id: int | None = Query(default=None, ge=1),
+    category_id: int | None = Query(default=None, ge=1),
+    subcategory_id: int | None = Query(default=None, ge=1),
+    min_confidence: float | None = Query(default=None, ge=0, le=100),
+) -> HitTracingRecordListResponse:
+    try:
+        data = jargon_analysis_service.list_matched_records(
+            source_type=source_type,
+            page=page,
+            page_size=page_size,
+            task_id=task_id,
+            search=search,
+            keyword_id=keyword_id,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            min_confidence=min_confidence,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return HitTracingRecordListResponse(**data)
+
+
+@app.get("/api/jargon-analysis/matches/{record_id}", response_model=HitTracingRecordDetailResponse)
+def get_matched_record_detail(record_id: int) -> HitTracingRecordDetailResponse:
+    detail = jargon_analysis_service.get_matched_record_detail(record_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="未找到命中记录")
+    return HitTracingRecordDetailResponse(**detail)
+
+
 @app.get("/api/files", response_model=list[FileEntryResponse])
 def list_files() -> list[FileEntryResponse]:
     return [FileEntryResponse(**item) for item in file_service.list_files()]
@@ -398,10 +443,29 @@ def delete_file(payload: FileDeleteRequest) -> Response:
     return Response(status_code=204)
 
 
-def _to_device_response(device: DeviceInfo) -> DeviceResponse:
+@app.post("/api/files/batch-delete", status_code=204)
+def batch_delete_files(payload: FileBatchDeleteRequest) -> Response:
+    try:
+        file_service.delete_files(payload.paths)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (IsADirectoryError, PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+def _to_device_responses(devices: list[DeviceInfo]) -> list[DeviceResponse]:
+    active_device_map = run_service.get_active_device_map()
+    return [_to_device_response(device, active_device_map.get(device.serial)) for device in devices]
+
+
+def _to_device_response(device: DeviceInfo, active_run: dict[str, object] | None = None) -> DeviceResponse:
     return DeviceResponse(
         serial=device.serial,
         state=device.state,
         android_version=device.android_version,
         model=device.model,
+        busy=active_run is not None,
+        active_run_id=int(active_run["id"]) if active_run is not None else None,
+        active_run_status=str(active_run.get("status") or "") if active_run is not None else "",
     )

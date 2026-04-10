@@ -180,6 +180,7 @@ function registerIpcHandlers() {
   electron.ipcMain.handle("service:request", async (_event, request) => proxyRequest(request));
   electron.ipcMain.handle("service:getBaseUrl", () => SERVICE_BASE_URL);
   electron.ipcMain.handle("system:openPath", async (_event, targetPath) => electron.shell.openPath(targetPath));
+  electron.ipcMain.handle("system:openExternal", async (_event, targetUrl) => electron.shell.openExternal(targetUrl));
   electron.ipcMain.handle("system:showError", async (_event, title, content) => {
     if (mainWindow !== null) {
       await electron.dialog.showMessageBox(mainWindow, {

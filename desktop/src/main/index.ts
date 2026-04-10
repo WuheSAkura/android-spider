@@ -223,6 +223,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("service:request", async (_event, request: ServiceRequest) => proxyRequest(request));
   ipcMain.handle("service:getBaseUrl", () => SERVICE_BASE_URL);
   ipcMain.handle("system:openPath", async (_event, targetPath: string) => shell.openPath(targetPath));
+  ipcMain.handle("system:openExternal", async (_event, targetUrl: string) => shell.openExternal(targetUrl));
   ipcMain.handle("system:showError", async (_event, title: string, content: string) => {
     if (mainWindow !== null) {
       await dialog.showMessageBox(mainWindow, {

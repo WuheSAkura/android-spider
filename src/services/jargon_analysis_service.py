@@ -203,6 +203,78 @@ class JargonAnalysisService:
             "total_pages": math.ceil(total / page_size) if page_size else 0,
         }
 
+    def list_matched_records(
+        self,
+        *,
+        source_type: str,
+        page: int,
+        page_size: int,
+        task_id: int | None,
+        search: str | None,
+        keyword_id: int | None,
+        category_id: int | None,
+        subcategory_id: int | None,
+        min_confidence: float | None,
+    ) -> dict[str, Any]:
+        if source_type not in SOURCE_TYPE_TO_PLATFORM:
+            raise ValueError("不支持的数据源类型")
+
+        store = AnalysisStore(self.sqlite_path)
+        try:
+            total = store.count_matched_source_records(
+                source_type=source_type,
+                task_id=task_id,
+                search=search,
+                keyword_id=keyword_id,
+                category_id=category_id,
+                subcategory_id=subcategory_id,
+                min_confidence=min_confidence,
+            )
+            rows = store.list_matched_source_records(
+                source_type=source_type,
+                task_id=task_id,
+                search=search,
+                keyword_id=keyword_id,
+                category_id=category_id,
+                subcategory_id=subcategory_id,
+                min_confidence=min_confidence,
+                limit=page_size,
+                offset=(page - 1) * page_size,
+            )
+            record_ids = [int(row["id"]) for row in rows]
+            matched_map, _ = store.get_record_match_details(source_type=source_type, record_ids=record_ids)
+        finally:
+            store.close()
+
+        return {
+            "items": [self._serialize_matched_record_summary(row, matched_map.get(int(row["id"]), [])) for row in rows],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": math.ceil(total / page_size) if page_size else 0,
+        }
+
+    def get_matched_record_detail(self, record_id: int) -> dict[str, Any] | None:
+        store = AnalysisStore(self.sqlite_path)
+        try:
+            record = store.get_collected_record(record_id)
+            if record is None:
+                return None
+
+            platform = str(record.get("platform") or "")
+            source_type = PLATFORM_TO_SOURCE_TYPE.get(platform)
+            if source_type is None:
+                return None
+
+            matched_map, _ = store.get_record_match_details(source_type=source_type, record_ids=[record_id])
+        finally:
+            store.close()
+
+        matches = matched_map.get(record_id, [])
+        if not matches:
+            return None
+        return self._serialize_matched_record_detail(record, matches)
+
     def process_task(self, task_id: int) -> None:
         store = AnalysisStore(self.sqlite_path)
         try:
@@ -387,6 +459,56 @@ class JargonAnalysisService:
             "topics": extra.get("topics") or [],
             "ip_location": str(record.get("ip_location") or ""),
         }
+
+    def _serialize_matched_record_summary(
+        self,
+        record: dict[str, Any],
+        matches: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        record_id = int(record["id"])
+        basic_matches = [
+            {
+                "task_id": int(item["task_id"]),
+                "keyword_id": int(item["keyword_id"] or 0),
+                "keyword": str(item["keyword"] or ""),
+                "meaning": str(item["meaning"] or ""),
+                "confidence": float(item["confidence"] or 0),
+            }
+            for item in matches
+        ]
+        summary = self._serialize_record(record, basic_matches, {record_id})
+        summary.update(
+            {
+                "local_run_id": int(record.get("local_run_id") or 0),
+                "item_index": int(record.get("item_index") or 0),
+                "record_type": str(record.get("record_type") or ""),
+                "match_count": len(matches),
+                "top_confidence": max((float(item["confidence"] or 0) for item in matches), default=0),
+                "matches": matches,
+            }
+        )
+        return summary
+
+    def _serialize_matched_record_detail(
+        self,
+        record: dict[str, Any],
+        matches: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        detail = self._serialize_matched_record_summary(record, matches)
+        detail.update(
+            {
+                "author_name": str(record.get("author_name") or ""),
+                "author_id": str(record.get("author_id") or ""),
+                "location_text": str(record.get("location_text") or ""),
+                "published_text": str(record.get("published_text") or ""),
+                "metrics": record.get("metrics") if isinstance(record.get("metrics"), dict) else {},
+                "extra": record.get("extra") if isinstance(record.get("extra"), dict) else {},
+                "raw_visible_texts": record.get("raw_visible_texts")
+                if isinstance(record.get("raw_visible_texts"), list)
+                else [],
+            }
+        )
+        return detail
 
     @staticmethod
     def _build_source_task_name(row: dict[str, Any]) -> str:

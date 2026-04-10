@@ -10,6 +10,7 @@ const desktopApi = {
   request: (request: ServiceRequest) => ipcRenderer.invoke("service:request", request),
   getBaseUrl: (): Promise<string> => ipcRenderer.invoke("service:getBaseUrl"),
   openPath: (targetPath: string): Promise<string> => ipcRenderer.invoke("system:openPath", targetPath),
+  openExternal: (targetUrl: string): Promise<void> => ipcRenderer.invoke("system:openExternal", targetUrl),
   showError: (title: string, content: string): Promise<void> =>
     ipcRenderer.invoke("system:showError", title, content),
 };
