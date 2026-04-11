@@ -13,11 +13,7 @@
 >
 > 项目通过 `adb + uiautomator2` 驱动模拟器或真机执行闲鱼、小红书采集，结合本地 `FastAPI + Electron + React` 控制台，提供采集任务调度、运行留痕、黑话字典管理、AI 黑话研判、命中溯源与本地文件治理能力。
 
-![项目截图](docs/images/screenshot.png)
 
-> 请将实际桌面端截图或演示动图放到 `docs/images/screenshot.png`。
->
-> 演示视频占位：`[请在此处替换你的演示视频链接]`
 
 ## 📌 项目简介
 
@@ -649,8 +645,4 @@ curl -X POST "http://127.0.0.1:8765/api/jargon-analysis/tasks" \
 - `scripts/run_xiaohongshu_demo.ps1`
 - `scripts/run_settings_demo.ps1`
 
-### 建议补充的仓库资源
 
-- `[请在此处补充 docs/images/screenshot.png]`
-- `[请在此处补充演示视频或 GIF]`
-- `[请在此处补充更正式的版本发布说明]`
