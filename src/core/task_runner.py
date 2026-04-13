@@ -5,88 +5,95 @@ from pathlib import Path
 from typing import Any
 
 from src.adapters import ADAPTER_REGISTRY
-from src.adapters.base_adapter import AdapterPartialResult, AdapterRunResult, BaseAdapter
+from src.adapters.base_adapter import AdapterPartialResult, BaseAdapter
 from src.core.actions import ActionExecutor
 from src.core.adb_manager import AdbManager
 from src.core.artifacts import ArtifactManager
 from src.core.device_manager import DeviceManager
 from src.core.driver import AndroidDriver
+from src.models.artifact_upload import ArtifactUploadRecord
 from src.models.collected_record import CollectedRecord
 from src.models.task_models import TaskConfig
 from src.services.minio_service import MinIOArtifactService
-from src.services.ssh_tunnel_service import SSHTunnelService
 from src.storage.result_store import MySQLResultStore
-from src.storage.sqlite_store import SQLiteStore
 from src.utils.exceptions import ConfigError, TaskCancelledError
 from src.utils.logger import setup_logger
 from src.utils.time_utils import format_datetime, now_local
 
 
 class TaskRunner:
-    """负责将配置、驱动、Adapter 和存储串成完整执行闭环。"""
+    """负责将配置、驱动、Adapter 和共享存储串成完整执行闭环。"""
 
     def __init__(
         self,
         task_config: TaskConfig,
         adb_manager: AdbManager | None = None,
         *,
-        local_run_id: int | None = None,
+        run_id: int | None = None,
     ) -> None:
         self.task_config = task_config
         self.adb_manager = adb_manager or AdbManager()
         self.device_manager = DeviceManager(self.adb_manager)
         self.adapter = self._load_adapter(task_config.adapter)
-        self.local_run_id = local_run_id
+        self.run_id = run_id
 
     def run(self) -> dict[str, Any]:
         logger = setup_logger("task_runner.bootstrap")
         artifacts: ArtifactManager | None = None
-        sqlite_store: SQLiteStore | None = None
         mysql_store: MySQLResultStore | None = None
-        ssh_tunnel: SSHTunnelService | None = None
 
         started_at = format_datetime(now_local())
-        device_serial = "unknown"
-        mysql_run_id: int | None = None
+        device_serial = self.task_config.device_serial or "unknown"
+        run_id = self.run_id
         driver: AndroidDriver | None = None
 
         try:
             artifacts = ArtifactManager(
                 self.task_config.output_dir,
                 self.task_config.task_name,
-                run_suffix=f"run_{self.local_run_id}" if self.local_run_id is not None else None,
+                run_suffix=f"run_{run_id}" if run_id is not None else None,
             )
             logger = setup_logger(f"task_runner.{self.task_config.task_name}", artifacts.log_file)
-            sqlite_store = SQLiteStore(self.task_config.storage.sqlite_path)
-            if self.local_run_id is not None:
-                sqlite_store.mark_run_started(self.local_run_id, started_at=started_at, log_path=str(artifacts.log_file))
-
-            mysql_config = self.task_config.storage.mysql
-            if self.task_config.storage.ssh.enabled:
-                ssh_tunnel = SSHTunnelService(self.task_config.storage.ssh, logger)
-                ssh_tunnel.start()
-                mysql_config = mysql_config.with_endpoint("127.0.0.1", ssh_tunnel.local_port)
-
-            mysql_store = MySQLResultStore(mysql_config, logger)
             self.adapter.validate_config(self.task_config)
-            self._check_cancelled(sqlite_store)
+
+            mysql_store = MySQLResultStore(
+                self.task_config.storage.mysql,
+                logger,
+                ssh_config=self.task_config.storage.ssh,
+            )
+            mysql_store.connect()
+            self._check_cancelled(mysql_store, run_id)
 
             device = self._select_device()
             device_serial = device.serial
-            if self.local_run_id is not None:
-                sqlite_store.update_run_device(self.local_run_id, device_serial)
 
-            mysql_store.connect()
-            mysql_run_id = mysql_store.create_run(self.task_config.task_name, device_serial, "running", started_at)
+            if run_id is None:
+                requested_at = started_at
+                run_id = mysql_store.create_run(
+                    task_name=self.task_config.task_name,
+                    adapter=self.task_config.adapter,
+                    platform="",
+                    package_name=self.task_config.package_name,
+                    run_mode=self.task_config.run_mode,
+                    device_serial=device_serial,
+                    status="pending",
+                    started_at=requested_at,
+                    requested_at=requested_at,
+                    config_json=self._build_run_config_payload(device_serial),
+                )
+            else:
+                mysql_store.update_run_device(run_id, device_serial)
+
+            mysql_store.mark_run_started(run_id, started_at=started_at, log_path=str(artifacts.log_file))
 
             driver = AndroidDriver(device_serial, logger).connect()
             if not driver.is_alive():
                 raise ConfigError("设备连接成功但驱动不可用，请检查 uiautomator2 初始化状态。")
 
             self.adapter.before_run(self.task_config, logger)
-            self._check_cancelled(sqlite_store)
+            self._check_cancelled(mysql_store, run_id)
             driver.start_app(self.task_config.package_name, self.task_config.launch_activity)
-            self._sleep_with_cancel(sqlite_store, self.task_config.startup_wait_seconds)
+            self._sleep_with_cancel(mysql_store, run_id, self.task_config.startup_wait_seconds)
 
             custom_result = self.adapter.execute_task(
                 driver=driver,
@@ -94,8 +101,8 @@ class TaskRunner:
                 artifacts=artifacts,
                 logger=logger,
                 mysql_store=mysql_store,
-                run_id=mysql_run_id,
-                check_cancelled=lambda: self._check_cancelled(sqlite_store),
+                run_id=run_id,
+                check_cancelled=lambda: self._check_cancelled(mysql_store, run_id),
             )
 
             last_visible_texts: list[str] = []
@@ -106,9 +113,9 @@ class TaskRunner:
             if custom_result is None:
                 executor = ActionExecutor(driver, self.task_config, artifacts, logger)
                 for step in self.task_config.steps:
-                    self._check_cancelled(sqlite_store)
+                    self._check_cancelled(mysql_store, run_id)
                     step_result = executor.execute(step)
-                    self._check_cancelled(sqlite_store)
+                    self._check_cancelled(mysql_store, run_id)
                     if step_result and "capture" in step_result:
                         capture_data = step_result["capture"]
                         last_page_name = str(step_result.get("page_name", last_page_name))
@@ -117,7 +124,7 @@ class TaskRunner:
                 if not last_visible_texts and (
                     self.task_config.save_screenshot or self.task_config.save_hierarchy or self.task_config.save_visible_texts
                 ):
-                    self._check_cancelled(sqlite_store)
+                    self._check_cancelled(mysql_store, run_id)
                     final_capture = artifacts.capture_page(
                         driver,
                         save_screenshot=self.task_config.save_screenshot,
@@ -141,13 +148,13 @@ class TaskRunner:
                 collected_records = custom_result.collected_records
                 result = custom_result.result
 
-            result["run_id"] = mysql_run_id
-            if self.local_run_id is not None:
-                result["local_run_id"] = self.local_run_id
+            result["run_id"] = run_id
+            result["local_run_id"] = run_id
             artifacts.write_json("result.json", result)
-            mysql_store.save_collected_items(mysql_run_id, last_page_name, last_visible_texts)
-            mysql_store.save_collected_records(mysql_run_id, collected_records)
-            uploaded_artifacts = []
+            mysql_store.save_collected_items(run_id, last_page_name, last_visible_texts)
+            mysql_store.save_collected_records(run_id, collected_records)
+
+            uploaded_artifacts: list[ArtifactUploadRecord] = []
             try:
                 uploaded_artifacts = self._upload_artifacts(
                     artifacts=artifacts,
@@ -159,30 +166,23 @@ class TaskRunner:
                 result.pop("artifact_upload_count", None)
                 result["artifact_upload_error"] = str(exc)
                 logger.exception("上传任务产物到 MinIO 失败。")
+
             if uploaded_artifacts:
-                mysql_store.save_artifact_uploads(mysql_run_id, uploaded_artifacts)
+                mysql_store.save_artifact_uploads(run_id, uploaded_artifacts)
+
             result_path = artifacts.write_json("result.json", result)
             mysql_store.finish_run(
-                mysql_run_id,
+                run_id,
                 status="success",
                 finished_at=format_datetime(now_local()),
                 artifact_dir=str(artifacts.run_dir),
+                result=result,
                 error_message=None,
+                mysql_run_id=run_id,
+                device_serial=device_serial,
+                items_count=self._extract_int(result.get("item_count")),
+                comment_count=self._extract_int(result.get("comment_count")),
             )
-            if self.local_run_id is not None:
-                sqlite_store.replace_collected_records(self.local_run_id, collected_records)
-                sqlite_store.finish_run(
-                    self.local_run_id,
-                    status="success",
-                    finished_at=format_datetime(now_local()),
-                    artifact_dir=str(artifacts.run_dir),
-                    result=result,
-                    error_message=None,
-                    mysql_run_id=mysql_run_id,
-                    device_serial=device_serial,
-                    items_count=self._extract_int(result.get("item_count")),
-                    comment_count=self._extract_int(result.get("comment_count")),
-                )
             self.adapter.after_run(self.task_config, logger)
             logger.info("任务执行成功，结果文件：%s", result_path)
             return result
@@ -193,9 +193,8 @@ class TaskRunner:
                 error_message=str(exc),
                 logger=logger,
                 artifacts=artifacts,
-                sqlite_store=sqlite_store,
                 mysql_store=mysql_store,
-                mysql_run_id=mysql_run_id,
+                run_id=run_id,
                 driver=driver,
                 device_serial=device_serial,
                 save_traceback=False,
@@ -207,9 +206,8 @@ class TaskRunner:
                 error_message=str(exc),
                 logger=logger,
                 artifacts=artifacts,
-                sqlite_store=sqlite_store,
                 mysql_store=mysql_store,
-                mysql_run_id=mysql_run_id,
+                run_id=run_id,
                 driver=driver,
                 device_serial=device_serial,
                 save_traceback=True,
@@ -222,10 +220,6 @@ class TaskRunner:
                     logger.debug("停止应用失败，忽略。", exc_info=True)
             if mysql_store is not None:
                 mysql_store.close()
-            if ssh_tunnel is not None:
-                ssh_tunnel.close()
-            if sqlite_store is not None:
-                sqlite_store.close()
 
     def dump_current_page(self, output_dir: Path) -> dict[str, Any]:
         artifacts = ArtifactManager(output_dir, "dump_page")
@@ -259,9 +253,8 @@ class TaskRunner:
         error_message: str,
         logger,
         artifacts: ArtifactManager | None,
-        sqlite_store: SQLiteStore | None,
         mysql_store: MySQLResultStore | None,
-        mysql_run_id: int | None,
+        run_id: int | None,
         driver: AndroidDriver | None,
         device_serial: str,
         save_traceback: bool,
@@ -299,10 +292,9 @@ class TaskRunner:
             "artifact_dir": artifact_dir,
             "error_message": error_message,
         }
-        if self.local_run_id is not None:
-            result["local_run_id"] = self.local_run_id
-        if mysql_run_id is not None:
-            result["run_id"] = mysql_run_id
+        if run_id is not None:
+            result["run_id"] = run_id
+            result["local_run_id"] = run_id
         if partial_result is not None:
             result["partial_exported"] = True
             result.update(partial_result.result)
@@ -312,7 +304,7 @@ class TaskRunner:
             if save_traceback and traceback_text:
                 artifacts.write_text("traceback.txt", traceback_text)
 
-        if artifacts is not None and mysql_store is not None and mysql_run_id is not None:
+        if artifacts is not None and mysql_store is not None and run_id is not None:
             try:
                 uploaded_artifacts = self._upload_artifacts(
                     artifacts=artifacts,
@@ -320,7 +312,7 @@ class TaskRunner:
                     logger=logger,
                 )
                 if uploaded_artifacts:
-                    mysql_store.save_artifact_uploads(mysql_run_id, uploaded_artifacts)
+                    mysql_store.save_artifact_uploads(run_id, uploaded_artifacts)
                 artifacts.write_json("result.json", result)
             except Exception as exc:
                 result["artifact_upload_error"] = str(exc)
@@ -330,34 +322,24 @@ class TaskRunner:
         finished_at = format_datetime(now_local())
         partial_records = partial_result.collected_records if partial_result is not None else []
 
-        if mysql_run_id is not None and mysql_store is not None:
+        if run_id is not None and mysql_store is not None:
             try:
                 if partial_records:
-                    mysql_store.save_collected_records(mysql_run_id, partial_records)
+                    mysql_store.save_collected_records(run_id, partial_records)
                 mysql_store.finish_run(
-                    mysql_run_id,
+                    run_id,
                     status=status,
                     finished_at=finished_at,
                     artifact_dir=artifact_dir,
+                    result=result,
                     error_message=error_message,
+                    mysql_run_id=run_id,
+                    device_serial=device_serial,
+                    items_count=self._extract_partial_count(result, partial_result, "partial_item_count"),
+                    comment_count=self._extract_partial_count(result, partial_result, "partial_comment_count"),
                 )
             except Exception:
                 logger.exception("写入 MySQL 终止状态时出现异常。")
-
-        if sqlite_store is not None and self.local_run_id is not None:
-            sqlite_store.replace_collected_records(self.local_run_id, partial_records)
-            sqlite_store.finish_run(
-                self.local_run_id,
-                status=status,
-                finished_at=finished_at,
-                artifact_dir=artifact_dir,
-                result=result,
-                error_message=error_message,
-                mysql_run_id=mysql_run_id,
-                device_serial=device_serial,
-                items_count=self._extract_partial_count(result, partial_result, "partial_item_count"),
-                comment_count=self._extract_partial_count(result, partial_result, "partial_comment_count"),
-            )
 
         return result
 
@@ -369,26 +351,35 @@ class TaskRunner:
             raise ConfigError(f"指定设备不可用：{self.task_config.device_serial}")
         return self.device_manager.get_default_device()
 
-    def _check_cancelled(self, sqlite_store: SQLiteStore | None) -> None:
-        if sqlite_store is None or self.local_run_id is None:
+    def _check_cancelled(self, mysql_store: MySQLResultStore | None, run_id: int | None) -> None:
+        if mysql_store is None or run_id is None:
             return
-        if sqlite_store.is_cancel_requested(self.local_run_id):
+        if mysql_store.is_cancel_requested(run_id):
             raise TaskCancelledError("任务已收到停止指令，准备结束本次采集。")
 
-    def _sleep_with_cancel(self, sqlite_store: SQLiteStore | None, seconds: float) -> None:
+    def _sleep_with_cancel(self, mysql_store: MySQLResultStore | None, run_id: int | None, seconds: float) -> None:
         remaining = max(seconds, 0)
         while remaining > 0:
-            self._check_cancelled(sqlite_store)
+            self._check_cancelled(mysql_store, run_id)
             step = min(remaining, 0.25)
             time_sleep(step)
             remaining -= step
-        self._check_cancelled(sqlite_store)
+        self._check_cancelled(mysql_store, run_id)
 
     def _load_adapter(self, adapter_name: str) -> BaseAdapter:
         adapter_class = ADAPTER_REGISTRY.get(adapter_name)
         if adapter_class is None:
             raise ConfigError(f"未注册的 adapter：{adapter_name}")
         return adapter_class()
+
+    def _build_run_config_payload(self, device_serial: str) -> dict[str, Any]:
+        return {
+            "device_serial": device_serial,
+            "run_mode": self.task_config.run_mode,
+            "adapter_options": self.task_config.adapter_options,
+            "package_name": self.task_config.package_name,
+            "adapter": self.task_config.adapter,
+        }
 
     @staticmethod
     def _extract_int(value: Any) -> int:
@@ -418,7 +409,7 @@ class TaskRunner:
         artifacts: ArtifactManager,
         result: dict[str, Any],
         logger,
-    ):
+    ) -> list[ArtifactUploadRecord]:
         minio_service = MinIOArtifactService(self.task_config.storage.minio, logger)
         if not minio_service.enabled():
             return []

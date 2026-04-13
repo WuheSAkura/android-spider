@@ -11,8 +11,9 @@ from src.core.task_runner import TaskRunner
 from src.models.task_models import TaskConfig
 from src.services.cancellation_service import CancellationService
 from src.services.settings_service import SettingsService
+from src.services.shared_store_factory import SharedStoreFactory
 from src.services.task_template_service import TaskTemplateService
-from src.storage.sqlite_store import ACTIVE_RUN_STATUSES, SQLiteStore
+from src.storage.result_store import ACTIVE_RUN_STATUSES
 from src.utils.exceptions import ConfigError
 from src.utils.time_utils import format_datetime
 
@@ -22,18 +23,19 @@ RUN_FUTURES: dict[int, Future[dict[str, Any]]] = {}
 
 
 class RunService:
-    """任务创建、查询、取消与本地文件读取。"""
+    """共享任务创建、查询、取消与产物读取服务。"""
 
     def __init__(self, project_root: Path, sqlite_path: Path) -> None:
         self.project_root = project_root
         self.sqlite_path = sqlite_path
         self.template_service = TaskTemplateService(project_root)
         self.settings_service = SettingsService(sqlite_path)
+        self.store_factory = SharedStoreFactory(self.settings_service)
         self.cancellation_service = CancellationService(sqlite_path)
         self._scheduling_lock = threading.Lock()
 
     def bootstrap(self) -> int:
-        store = SQLiteStore(self.sqlite_path)
+        store = self.store_factory.create_result_store(logger_name="run_service")
         try:
             return store.recover_interrupted_runs()
         finally:
@@ -48,20 +50,21 @@ class RunService:
         adapter_options: dict[str, Any],
     ) -> dict[str, Any]:
         with self._scheduling_lock:
-            store = SQLiteStore(self.sqlite_path)
+            template = self.template_service.get_template(template_id)
+            active_device_map = self.get_active_device_map()
+            resolved_device_serial = self._resolve_device_serial(
+                requested_device_serial=device_serial,
+                active_device_map=active_device_map,
+            )
+            task_config = self._build_task_config(
+                template_id=template_id,
+                device_serial=resolved_device_serial,
+                run_mode=run_mode,
+                adapter_options=adapter_options,
+            )
+            store = self.store_factory.create_result_store(logger_name="run_service")
             try:
-                template = self.template_service.get_template(template_id)
-                active_device_map = self.get_active_device_map(store=store)
-                resolved_device_serial = self._resolve_device_serial(
-                    requested_device_serial=device_serial,
-                    active_device_map=active_device_map,
-                )
-                task_config = self._build_task_config(
-                    template_id=template_id,
-                    device_serial=resolved_device_serial,
-                    run_mode=run_mode,
-                    adapter_options=adapter_options,
-                )
+                requested_at = format_datetime(None)
                 run_id = store.create_run(
                     task_name=task_config.task_name,
                     adapter=task_config.adapter,
@@ -69,6 +72,9 @@ class RunService:
                     package_name=task_config.package_name,
                     run_mode=task_config.run_mode,
                     device_serial=resolved_device_serial,
+                    status="pending",
+                    started_at=requested_at,
+                    requested_at=requested_at,
                     config_json={
                         "template_id": template_id,
                         "device_serial": task_config.device_serial or "",
@@ -92,31 +98,24 @@ class RunService:
         return self.get_run(run_id)
 
     def list_runs(self, limit: int = 100) -> list[dict[str, Any]]:
-        store = SQLiteStore(self.sqlite_path)
+        store = self.store_factory.create_result_store(logger_name="run_service")
         try:
             return store.list_runs(limit=limit)
         finally:
             store.close()
 
     def list_active_runs(self) -> list[dict[str, Any]]:
-        store = SQLiteStore(self.sqlite_path)
+        store = self.store_factory.create_result_store(logger_name="run_service")
         try:
             return store.list_active_runs()
         finally:
             store.close()
 
-    def get_active_device_map(self, *, store: SQLiteStore | None = None) -> dict[str, dict[str, Any]]:
-        owns_store = store is None
-        active_store = store or SQLiteStore(self.sqlite_path)
-        try:
-            active_runs = active_store.list_active_runs()
-        finally:
-            if owns_store:
-                active_store.close()
-        return self._build_active_device_map(active_runs)
+    def get_active_device_map(self) -> dict[str, dict[str, Any]]:
+        return self._build_active_device_map(self.list_active_runs())
 
     def get_run(self, run_id: int) -> dict[str, Any]:
-        store = SQLiteStore(self.sqlite_path)
+        store = self.store_factory.create_result_store(logger_name="run_service")
         try:
             run = store.get_run(run_id)
         finally:
@@ -127,53 +126,27 @@ class RunService:
 
     def get_run_records(self, run_id: int) -> list[dict[str, Any]]:
         self.get_run(run_id)
-        store = SQLiteStore(self.sqlite_path)
+        store = self.store_factory.create_result_store(logger_name="run_service")
         try:
             return store.get_run_records(run_id)
         finally:
             store.close()
 
     def get_run_logs(self, run_id: int, tail: int = 200) -> dict[str, Any]:
-        run = self.get_run(run_id)
-        log_path_value = str(run.get("log_path") or "")
-        if not log_path_value:
-            return {"path": "", "content": "", "line_count": 0}
-
-        log_path = Path(log_path_value)
-        if not log_path.exists():
-            return {"path": str(log_path), "content": "", "line_count": 0}
-
-        content = log_path.read_text(encoding="utf-8", errors="ignore")
-        lines = content.splitlines()
-        tail_lines = lines[-tail:] if tail > 0 else lines
-        return {
-            "path": str(log_path),
-            "content": "\n".join(tail_lines),
-            "line_count": len(lines),
-        }
+        self.get_run(run_id)
+        store = self.store_factory.create_result_store(logger_name="run_service")
+        try:
+            return store.get_run_logs(run_id, tail=tail)
+        finally:
+            store.close()
 
     def get_run_artifacts(self, run_id: int) -> list[dict[str, Any]]:
-        run = self.get_run(run_id)
-        artifact_dir_value = str(run.get("artifact_dir") or "")
-        if not artifact_dir_value:
-            return []
-
-        artifact_dir = Path(artifact_dir_value)
-        if not artifact_dir.exists():
-            return []
-
-        items: list[dict[str, Any]] = []
-        for path in sorted(artifact_dir.iterdir(), key=lambda item: item.name.lower()):
-            items.append(
-                {
-                    "name": path.name,
-                    "path": str(path),
-                    "is_dir": path.is_dir(),
-                    "size": path.stat().st_size if path.is_file() else 0,
-                    "kind": self._detect_artifact_kind(path),
-                }
-            )
-        return items
+        self.get_run(run_id)
+        store = self.store_factory.create_result_store(logger_name="run_service")
+        try:
+            return store.get_run_artifacts(run_id)
+        finally:
+            store.close()
 
     def _build_task_config(
         self,
@@ -241,7 +214,7 @@ class RunService:
             runner = TaskRunner(
                 task_config,
                 AdbManager(adb_path),
-                local_run_id=run_id,
+                run_id=run_id,
             )
             return runner.run()
         finally:
@@ -280,7 +253,7 @@ class RunService:
         return device_manager.discover_devices()
 
     def _mark_run_schedule_failed(self, run_id: int, device_serial: str, error_message: str) -> None:
-        store = SQLiteStore(self.sqlite_path)
+        store = self.store_factory.create_result_store(logger_name="run_service")
         try:
             store.finish_run(
                 run_id,
@@ -289,12 +262,12 @@ class RunService:
                 artifact_dir="",
                 result={
                     "status": "failed",
-                    "local_run_id": run_id,
+                    "run_id": run_id,
                     "device_serial": device_serial,
                     "error_message": f"任务调度失败：{error_message}",
                 },
                 error_message=f"任务调度失败：{error_message}",
-                mysql_run_id=None,
+                mysql_run_id=run_id,
                 device_serial=device_serial,
                 items_count=0,
                 comment_count=0,
@@ -311,20 +284,3 @@ class RunService:
                 continue
             device_map[serial] = run
         return device_map
-
-    @staticmethod
-    def _detect_artifact_kind(path: Path) -> str:
-        if path.is_dir():
-            return "directory"
-        suffix = path.suffix.lower()
-        if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-            return "image"
-        if suffix == ".json":
-            return "json"
-        if suffix == ".xml":
-            return "xml"
-        if suffix == ".csv":
-            return "csv"
-        if suffix in {".log", ".txt"}:
-            return "text"
-        return "file"

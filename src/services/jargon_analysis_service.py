@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src.services.ai_text_service import ai_text_service
-from src.storage.analysis_store import AnalysisStore
+from src.services.settings_service import SettingsService
+from src.services.shared_store_factory import SharedStoreFactory
+from src.storage.mysql_analysis_store import MySQLAnalysisStore
 from src.utils.time_utils import format_datetime
 
 
@@ -27,21 +29,22 @@ ANALYSIS_FUTURES: dict[int, Future[None]] = {}
 
 
 class JargonAnalysisService:
-    """黑话研判任务服务。"""
+    """共享黑话研判任务服务。"""
 
     def __init__(self, sqlite_path: Path) -> None:
-        self.sqlite_path = sqlite_path
+        self.settings_service = SettingsService(sqlite_path)
+        self.store_factory = SharedStoreFactory(self.settings_service)
         self.batch_size = 10
 
     def bootstrap(self) -> int:
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             return store.recover_interrupted_jargon_tasks()
         finally:
             store.close()
 
     def list_source_datasets(self) -> list[dict[str, Any]]:
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             rows = store.list_analysis_sources()
         finally:
@@ -72,7 +75,7 @@ class JargonAnalysisService:
 
         ai_text_service.validate_configuration()
 
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             source_snapshot = store.get_analysis_source_snapshot(source_type=source_type, source_task_id=source_task_id)
             if source_snapshot is None:
@@ -100,7 +103,7 @@ class JargonAnalysisService:
         return task
 
     def list_tasks(self, *, page: int, page_size: int) -> dict[str, Any]:
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             total = store.count_jargon_analysis_tasks()
             items = store.list_jargon_analysis_tasks(limit=page_size, offset=(page - 1) * page_size)
@@ -115,14 +118,14 @@ class JargonAnalysisService:
         }
 
     def get_task_detail(self, task_id: int) -> dict[str, Any] | None:
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             return store.get_jargon_analysis_task(task_id)
         finally:
             store.close()
 
     def get_task_results(self, task_id: int) -> list[dict[str, Any]]:
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             task = store.get_jargon_analysis_task(task_id)
             if task is None:
@@ -174,7 +177,7 @@ class JargonAnalysisService:
         if source_type not in SOURCE_TYPE_TO_PLATFORM:
             raise ValueError("不支持的数据源类型")
 
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             total = store.count_source_records(
                 source_type=source_type,
@@ -219,7 +222,7 @@ class JargonAnalysisService:
         if source_type not in SOURCE_TYPE_TO_PLATFORM:
             raise ValueError("不支持的数据源类型")
 
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             total = store.count_matched_source_records(
                 source_type=source_type,
@@ -255,7 +258,7 @@ class JargonAnalysisService:
         }
 
     def get_matched_record_detail(self, record_id: int) -> dict[str, Any] | None:
-        store = AnalysisStore(self.sqlite_path)
+        store = self._open_store()
         try:
             record = store.get_collected_record(record_id)
             if record is None:
@@ -276,8 +279,9 @@ class JargonAnalysisService:
         return self._serialize_matched_record_detail(record, matches)
 
     def process_task(self, task_id: int) -> None:
-        store = AnalysisStore(self.sqlite_path)
+        store: MySQLAnalysisStore | None = None
         try:
+            store = self._open_store()
             task = store.get_jargon_analysis_task(task_id)
             if task is None:
                 return
@@ -369,16 +373,18 @@ class JargonAnalysisService:
                 },
             )
         except Exception as exc:
-            store.update_jargon_analysis_task(
-                task_id,
-                {
-                    "status": "failed",
-                    "error_message": str(exc),
-                    "completed_at": format_datetime(None),
-                },
-            )
+            if store is not None:
+                store.update_jargon_analysis_task(
+                    task_id,
+                    {
+                        "status": "failed",
+                        "error_message": str(exc),
+                        "completed_at": format_datetime(None),
+                    },
+                )
         finally:
-            store.close()
+            if store is not None:
+                store.close()
 
     def _submit_task(self, task_id: int) -> None:
         active_future = ANALYSIS_FUTURES.get(task_id)
@@ -393,7 +399,13 @@ class JargonAnalysisService:
             if current is done_future:
                 ANALYSIS_FUTURES.pop(analysis_task_id, None)
 
-        future.add_done_callback(lambda done_future, analysis_task_id=task_id: _cleanup(done_future, analysis_task_id=analysis_task_id))
+        def _on_done(done_future: Future[None]) -> None:
+            _cleanup(done_future, analysis_task_id=task_id)
+
+        future.add_done_callback(_on_done)
+
+    def _open_store(self) -> MySQLAnalysisStore:
+        return self.store_factory.create_analysis_store(logger_name="jargon_analysis_service")
 
     @staticmethod
     def _chunks(items: list[dict[str, Any]], size: int) -> Iterable[list[dict[str, Any]]]:

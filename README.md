@@ -32,7 +32,7 @@
 
 - **手机端采集闭环**：通过 `adb + uiautomator2` 驱动模拟器或真机，适合处理网页端不可复用的 App 场景
 - **桌面控制台**：以 Electron 桌面端承载任务发起、运行历史、字典维护、研判与文件管理
-- **双存储策略**：本地 SQLite 管理任务与研判主数据，MySQL 继续承接采集结果同步存储
+- **共享云端主库**：MySQL 作为运行历史、结构化记录、黑话字典、研判任务与命中结果的共享主库，SQLite 仅保留本机设置
 - **AI 黑话研判**：支持词典管理、分析任务创建、命中结果查看和命中溯源
 - **平台化设计**：CLI、FastAPI、本地桌面端共用同一套任务与数据模型
 - **可迁移能力**：仓库内保留旧项目 `xianyu/` 作为参考，但当前运行主链路已切换到 Android 端采集体系
@@ -97,8 +97,8 @@
 | 采集内核 | Python、PyYAML、自定义 Adapter | Python `>= 3.11` |
 | 本地 API | FastAPI、Uvicorn、Pydantic | FastAPI `>= 0.115.0` |
 | 桌面端 | Electron、React、TypeScript、electron-vite | Electron `^35.5.1`，React `^19.2.0` |
-| 本地存储 | SQLite | 主数据源，位于 `data/local_runs.sqlite3` |
-| 外部存储 | MySQL | 采集结果同步存储 |
+| 本地存储 | SQLite | 仅存储本机设置，位于 `data/local_runs.sqlite3` |
+| 共享主存储 | MySQL | 运行历史、结构化记录、黑话字典、研判任务与命中结果 |
 | AI 依赖 | OpenAI SDK、Qwen 兼容接口 | 默认 DashScope 兼容模式 |
 | 部署形态 | Windows 本地运行 | 当前版本未提供官方 Docker 编排 |
 
@@ -122,12 +122,12 @@ flowchart LR
     ADAPTER --> XHS[小红书适配器]
 
     CORE --> ART[Artifacts / Exports]
-    CORE --> SQLITE[(SQLite)]
-    CORE --> MYSQL[(MySQL)]
+    CORE --> SQLITE[(SQLite Settings)]
+    CORE --> MYSQL[(Shared MySQL)]
 
     RUN --> AI[Qwen Compatible API]
-    AI --> SQLITE
-    API --> SQLITE
+    AI --> MYSQL
+    API --> MYSQL
 ```
 
 ### 核心业务流程图
@@ -138,8 +138,8 @@ flowchart TD
     B --> C[创建采集任务]
     C --> D[TaskRunner 调用对应 Adapter]
     D --> E[驱动 App 端页面采集]
-    E --> F[写入 SQLite / MySQL]
-    F --> G[生成日志、截图、层级、JSON、CSV]
+    E --> F[写入 Shared MySQL]
+    F --> G[生成日志、截图、层级、JSON、CSV 并上传 MinIO]
     G --> H[在桌面端查看运行历史]
     H --> I[维护黑话字典]
     I --> J[创建黑话研判任务]
@@ -537,8 +537,8 @@ curl -X POST "http://127.0.0.1:8765/api/jargon-analysis/tasks" \
 ### 开发原则
 
 - **采集逻辑优先放在 `src/adapters/` 和 `src/core/`，不要直接堆在接口层。**
-- **运行状态、记录、设置优先复用 SQLite 主数据模型。**
-- **黑话研判相关能力优先复用 `analysis_store.py` 和 `/api/jargon-analysis/*` 链路。**
+- **运行状态、结构化记录、黑话字典、研判任务优先复用共享 MySQL 主数据模型。**
+- **本机 SQLite 只保留设置；需要迁移旧数据时优先使用 `scripts/migrate_local_sqlite_to_mysql.py`。**
 - **新增平台时先统一结构化字段，再决定是否接入黑话研判。**
 
 ### 推荐开发入口

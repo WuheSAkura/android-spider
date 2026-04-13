@@ -66,6 +66,17 @@ export default function RunDetailPage(): React.JSX.Element {
     }
   }
 
+  async function handleOpenTarget(target: string): Promise<void> {
+    if (!target) {
+      return;
+    }
+    if (/^https?:\/\//i.test(target)) {
+      await api.openExternal(target);
+      return;
+    }
+    await api.openPath(target);
+  }
+
   return (
     <div className="page-stack">
       <section className="section-heading">
@@ -146,7 +157,7 @@ export default function RunDetailPage(): React.JSX.Element {
                     <button
                       key={artifact.path}
                       className="artifact-item"
-                      onClick={() => void api.openPath(artifact.path)}
+                      onClick={() => void handleOpenTarget(artifact.path)}
                     >
                       <strong>{artifact.name}</strong>
                       <span>
@@ -167,7 +178,7 @@ export default function RunDetailPage(): React.JSX.Element {
                   <h2>运行日志</h2>
                 </div>
                 {logs?.path ? (
-                  <button className="text-link-button" onClick={() => void api.openPath(logs.path)}>
+                  <button className="text-link-button" onClick={() => void handleOpenTarget(logs.path)}>
                     打开日志文件
                   </button>
                 ) : null}

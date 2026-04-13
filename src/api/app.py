@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from src.api.schemas import (
     JargonSourceDatasetResponse,
     JargonSourceRecordListResponse,
     JargonTaskListResponse,
+    JargonTaskResultItemResponse,
     JargonTaskResponse,
     JargonTaskResultsResponse,
     KeywordCategoryCreatePayload,
@@ -144,8 +144,8 @@ def create_run(payload: RunCreateRequest) -> RunSummaryResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (StorageError, sqlite3.IntegrityError) as exc:
-        raise HTTPException(status_code=500, detail=f"本地任务库写入失败：{exc}") from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=500, detail=f"共享任务库写入失败：{exc}") from exc
     return RunSummaryResponse(**run)
 
 
@@ -362,9 +362,10 @@ def get_analysis_task_results(task_id: int) -> JargonTaskResultsResponse:
     detail = jargon_analysis_service.get_task_detail(task_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="未找到分析任务")
+    items = [JargonTaskResultItemResponse(**item) for item in jargon_analysis_service.get_task_results(task_id)]
     return JargonTaskResultsResponse(
         task=JargonTaskResponse(**detail),
-        items=jargon_analysis_service.get_task_results(task_id),
+        items=items,
     )
 
 
@@ -461,12 +462,21 @@ def _to_device_responses(devices: list[DeviceInfo]) -> list[DeviceResponse]:
 
 
 def _to_device_response(device: DeviceInfo, active_run: dict[str, object] | None = None) -> DeviceResponse:
+    active_run_id_raw = active_run.get("id") if active_run is not None else None
     return DeviceResponse(
         serial=device.serial,
         state=device.state,
         android_version=device.android_version,
         model=device.model,
         busy=active_run is not None,
-        active_run_id=int(active_run["id"]) if active_run is not None else None,
+        active_run_id=_to_int_or_none(active_run_id_raw),
         active_run_status=str(active_run.get("status") or "") if active_run is not None else "",
     )
+
+
+def _to_int_or_none(value: object | None) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        return int(value)
+    return None

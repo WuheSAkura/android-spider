@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.services.env_service import get_env, get_env_bool, get_env_int
+from src.models.task_models import MinIOConfig, MySQLConfig, SSHTunnelConfig
 from src.storage.sqlite_store import SQLiteStore
 
 
@@ -32,6 +33,39 @@ class AppSettings:
     minio_secret_key: str = ""
     minio_secure: bool = False
     minio_bucket: str = ""
+
+    def to_mysql_config(self) -> MySQLConfig:
+        return MySQLConfig(
+            host=self.mysql_host,
+            port=self.mysql_port,
+            user=self.mysql_user,
+            password=self.mysql_password,
+            database=self.mysql_database,
+            charset=self.mysql_charset,
+        )
+
+    def to_ssh_config(self) -> SSHTunnelConfig:
+        return SSHTunnelConfig(
+            enabled=self.ssh_enabled,
+            host=self.ssh_host,
+            port=self.ssh_port,
+            user=self.ssh_user,
+            password=self.ssh_password,
+            local_port=self.ssh_local_port,
+            remote_host=self.ssh_remote_host,
+            remote_port=self.ssh_remote_port,
+        )
+
+    def to_minio_config(self) -> MinIOConfig:
+        return MinIOConfig(
+            enabled=self.minio_enabled,
+            public_url=self.minio_public_url,
+            endpoint=self.minio_endpoint,
+            access_key=self.minio_access_key,
+            secret_key=self.minio_secret_key,
+            secure=self.minio_secure,
+            bucket=self.minio_bucket,
+        )
 
     def to_dict(self) -> dict[str, str | int | bool]:
         return {
