@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.error import URLError
@@ -29,6 +30,9 @@ else:
 class MySQLResultStore:
     """共享 MySQL 运行主库。"""
 
+    _schema_ready_keys: set[str] = set()
+    _schema_lock = threading.Lock()
+
     def __init__(
         self,
         config: MySQLConfig,
@@ -53,7 +57,7 @@ class MySQLResultStore:
                 raise
             self._ensure_database()
             self.connection = self._connect_database()
-        self._ensure_tables()
+        self._ensure_schema_ready()
         self.logger.info("MySQL 已连接：%s:%s/%s", self._effective_host, self._effective_port, self.config.database)
 
     def create_run(
@@ -632,6 +636,17 @@ class MySQLResultStore:
             cursor.close()
             server_connection.close()
 
+    def _ensure_schema_ready(self) -> None:
+        cache_key = self._schema_cache_key()
+        if cache_key in self._schema_ready_keys:
+            return
+
+        with self._schema_lock:
+            if cache_key in self._schema_ready_keys:
+                return
+            self._ensure_tables()
+            self._schema_ready_keys.add(cache_key)
+
     def _ensure_tables(self) -> None:
         cursor = self._cursor()
         cursor.execute(
@@ -664,27 +679,6 @@ class MySQLResultStore:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
-        self._ensure_column("task_runs", "task_name", "VARCHAR(255) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "adapter", "VARCHAR(128) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "platform", "VARCHAR(64) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "package_name", "VARCHAR(255) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "run_mode", "VARCHAR(32) NOT NULL DEFAULT 'normal'")
-        self._ensure_column("task_runs", "status", "VARCHAR(32) NOT NULL DEFAULT 'pending'")
-        self._ensure_column("task_runs", "device_serial", "VARCHAR(255) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "requested_at", "VARCHAR(32) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "started_at", "VARCHAR(32) NULL")
-        self._ensure_column("task_runs", "finished_at", "VARCHAR(32) NULL")
-        self._ensure_column("task_runs", "artifact_dir", "TEXT NULL")
-        self._ensure_column("task_runs", "log_path", "TEXT NULL")
-        self._ensure_column("task_runs", "config_json", "LONGTEXT NULL")
-        self._ensure_column("task_runs", "result_json", "LONGTEXT NULL")
-        self._ensure_column("task_runs", "error_message", "LONGTEXT NULL")
-        self._ensure_column("task_runs", "mysql_run_id", "BIGINT NULL")
-        self._ensure_column("task_runs", "items_count", "INT NOT NULL DEFAULT 0")
-        self._ensure_column("task_runs", "comment_count", "INT NOT NULL DEFAULT 0")
-        self._ensure_column("task_runs", "cancel_requested", "TINYINT(1) NOT NULL DEFAULT 0")
-        self._ensure_column("task_runs", "created_at", "VARCHAR(32) NOT NULL DEFAULT ''")
-        self._ensure_column("task_runs", "updated_at", "VARCHAR(32) NOT NULL DEFAULT ''")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS collected_items (
@@ -697,10 +691,6 @@ class MySQLResultStore:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
-        self._ensure_column("collected_items", "run_id", "BIGINT NOT NULL DEFAULT 0")
-        self._ensure_column("collected_items", "page_name", "VARCHAR(100) NOT NULL DEFAULT ''")
-        self._ensure_column("collected_items", "text_content", "LONGTEXT NULL")
-        self._ensure_column("collected_items", "created_at", "VARCHAR(32) NOT NULL DEFAULT ''")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS collected_records (
@@ -727,23 +717,6 @@ class MySQLResultStore:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
-        self._ensure_column("collected_records", "run_id", "BIGINT NOT NULL DEFAULT 0")
-        self._ensure_column("collected_records", "local_run_id", "BIGINT NOT NULL DEFAULT 0")
-        self._ensure_column("collected_records", "item_index", "INT NOT NULL DEFAULT 0")
-        self._ensure_column("collected_records", "platform", "VARCHAR(64) NOT NULL DEFAULT ''")
-        self._ensure_column("collected_records", "record_type", "VARCHAR(64) NOT NULL DEFAULT ''")
-        self._ensure_column("collected_records", "keyword", "VARCHAR(255) NULL")
-        self._ensure_column("collected_records", "title", "LONGTEXT NULL")
-        self._ensure_column("collected_records", "content_text", "LONGTEXT NULL")
-        self._ensure_column("collected_records", "author_name", "VARCHAR(255) NULL")
-        self._ensure_column("collected_records", "author_id", "VARCHAR(255) NULL")
-        self._ensure_column("collected_records", "location_text", "VARCHAR(255) NULL")
-        self._ensure_column("collected_records", "ip_location", "VARCHAR(255) NULL")
-        self._ensure_column("collected_records", "published_text", "VARCHAR(255) NULL")
-        self._ensure_column("collected_records", "metrics_json", "LONGTEXT NULL")
-        self._ensure_column("collected_records", "extra_json", "LONGTEXT NULL")
-        self._ensure_column("collected_records", "raw_visible_texts_json", "LONGTEXT NULL")
-        self._ensure_column("collected_records", "created_at", "VARCHAR(32) NOT NULL DEFAULT ''")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS run_artifacts (
@@ -761,15 +734,71 @@ class MySQLResultStore:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
-        self._ensure_column("run_artifacts", "run_id", "BIGINT NOT NULL DEFAULT 0")
-        self._ensure_column("run_artifacts", "file_name", "VARCHAR(255) NOT NULL DEFAULT ''")
-        self._ensure_column("run_artifacts", "local_path", "TEXT NULL")
-        self._ensure_column("run_artifacts", "object_path", "VARCHAR(512) NOT NULL DEFAULT ''")
-        self._ensure_column("run_artifacts", "public_url", "TEXT NULL")
-        self._ensure_column("run_artifacts", "content_type", "VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream'")
-        self._ensure_column("run_artifacts", "file_size", "BIGINT NOT NULL DEFAULT 0")
-        self._ensure_column("run_artifacts", "created_at", "VARCHAR(32) NOT NULL DEFAULT ''")
         cursor.close()
+
+        required_columns: dict[str, list[tuple[str, str]]] = {
+            "task_runs": [
+                ("task_name", "VARCHAR(255) NOT NULL DEFAULT ''"),
+                ("adapter", "VARCHAR(128) NOT NULL DEFAULT ''"),
+                ("platform", "VARCHAR(64) NOT NULL DEFAULT ''"),
+                ("package_name", "VARCHAR(255) NOT NULL DEFAULT ''"),
+                ("run_mode", "VARCHAR(32) NOT NULL DEFAULT 'normal'"),
+                ("status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),
+                ("device_serial", "VARCHAR(255) NOT NULL DEFAULT ''"),
+                ("requested_at", "VARCHAR(32) NOT NULL DEFAULT ''"),
+                ("started_at", "VARCHAR(32) NULL"),
+                ("finished_at", "VARCHAR(32) NULL"),
+                ("artifact_dir", "TEXT NULL"),
+                ("log_path", "TEXT NULL"),
+                ("config_json", "LONGTEXT NULL"),
+                ("result_json", "LONGTEXT NULL"),
+                ("error_message", "LONGTEXT NULL"),
+                ("mysql_run_id", "BIGINT NULL"),
+                ("items_count", "INT NOT NULL DEFAULT 0"),
+                ("comment_count", "INT NOT NULL DEFAULT 0"),
+                ("cancel_requested", "TINYINT(1) NOT NULL DEFAULT 0"),
+                ("created_at", "VARCHAR(32) NOT NULL DEFAULT ''"),
+                ("updated_at", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ],
+            "collected_items": [
+                ("run_id", "BIGINT NOT NULL DEFAULT 0"),
+                ("page_name", "VARCHAR(100) NOT NULL DEFAULT ''"),
+                ("text_content", "LONGTEXT NULL"),
+                ("created_at", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ],
+            "collected_records": [
+                ("run_id", "BIGINT NOT NULL DEFAULT 0"),
+                ("local_run_id", "BIGINT NOT NULL DEFAULT 0"),
+                ("item_index", "INT NOT NULL DEFAULT 0"),
+                ("platform", "VARCHAR(64) NOT NULL DEFAULT ''"),
+                ("record_type", "VARCHAR(64) NOT NULL DEFAULT ''"),
+                ("keyword", "VARCHAR(255) NULL"),
+                ("title", "LONGTEXT NULL"),
+                ("content_text", "LONGTEXT NULL"),
+                ("author_name", "VARCHAR(255) NULL"),
+                ("author_id", "VARCHAR(255) NULL"),
+                ("location_text", "VARCHAR(255) NULL"),
+                ("ip_location", "VARCHAR(255) NULL"),
+                ("published_text", "VARCHAR(255) NULL"),
+                ("metrics_json", "LONGTEXT NULL"),
+                ("extra_json", "LONGTEXT NULL"),
+                ("raw_visible_texts_json", "LONGTEXT NULL"),
+                ("created_at", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ],
+            "run_artifacts": [
+                ("run_id", "BIGINT NOT NULL DEFAULT 0"),
+                ("file_name", "VARCHAR(255) NOT NULL DEFAULT ''"),
+                ("local_path", "TEXT NULL"),
+                ("object_path", "VARCHAR(512) NOT NULL DEFAULT ''"),
+                ("public_url", "TEXT NULL"),
+                ("content_type", "VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream'"),
+                ("file_size", "BIGINT NOT NULL DEFAULT 0"),
+                ("created_at", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ],
+        }
+        existing_columns = self._load_existing_columns(required_columns)
+        for table_name, columns in required_columns.items():
+            self._ensure_columns(table_name, columns, existing_columns.get(table_name, set()))
 
     def _connect_database(self):
         if mysql is None:
@@ -789,26 +818,63 @@ class MySQLResultStore:
         cursor.execute(sql, params)
         cursor.close()
 
-    def _ensure_column(self, table_name: str, column_name: str, column_sql: str) -> None:
+    def _load_existing_columns(self, table_columns: dict[str, list[tuple[str, str]]]) -> dict[str, set[str]]:
+        table_names = sorted(table_columns)
+        placeholders = ", ".join(["%s"] * len(table_names))
         cursor = self._cursor(dictionary=True)
         cursor.execute(
-            """
-            SELECT COUNT(*) AS total
+            f"""
+            SELECT
+                table_name AS table_name,
+                column_name AS column_name
             FROM information_schema.columns
             WHERE table_schema = %s
-              AND table_name = %s
-              AND column_name = %s
+              AND table_name IN ({placeholders})
             """,
-            (self.config.database, table_name, column_name),
+            (self.config.database, *table_names),
         )
-        row = cursor.fetchone()
-        exists = bool(row is not None and int(row["total"] or 0) > 0)
+        rows = cursor.fetchall()
         cursor.close()
-        if exists:
-            return
-        alter_cursor = self._cursor()
-        alter_cursor.execute(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_sql}")
-        alter_cursor.close()
+
+        existing_columns = {table_name: set() for table_name in table_names}
+        for row in rows:
+            table_name = str(row["table_name"] or "")
+            column_name = str(row["column_name"] or "")
+            if table_name in existing_columns and column_name:
+                existing_columns[table_name].add(column_name)
+        return existing_columns
+
+    def _ensure_columns(self, table_name: str, columns: list[tuple[str, str]], existing_columns: set[str]) -> None:
+        for column_name, column_sql in columns:
+            if column_name in existing_columns:
+                continue
+            alter_cursor = self._cursor()
+            alter_cursor.execute(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_sql}")
+            alter_cursor.close()
+
+    def _schema_cache_key(self) -> str:
+        return self._dump_json(
+            {
+                "mysql": {
+                    "host": self.config.host,
+                    "port": self.config.port,
+                    "user": self.config.user,
+                    "password": self.config.password,
+                    "database": self.config.database,
+                    "charset": self.config.charset,
+                },
+                "ssh": {
+                    "enabled": self.ssh_config.enabled,
+                    "host": self.ssh_config.host,
+                    "port": self.ssh_config.port,
+                    "user": self.ssh_config.user,
+                    "password": self.ssh_config.password,
+                    "local_port": self.ssh_config.local_port,
+                    "remote_host": self.ssh_config.remote_host,
+                    "remote_port": self.ssh_config.remote_port,
+                },
+            }
+        ) or ""
 
     def _cursor(self, *, dictionary: bool = False):
         if self.connection is None:

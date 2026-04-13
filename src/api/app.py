@@ -70,12 +70,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    run_service.bootstrap()
-    jargon_analysis_service.bootstrap()
-
-
 @app.get("/api/health")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}

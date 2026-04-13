@@ -34,13 +34,6 @@ class RunService:
         self.cancellation_service = CancellationService(sqlite_path)
         self._scheduling_lock = threading.Lock()
 
-    def bootstrap(self) -> int:
-        store = self.store_factory.create_result_store(logger_name="run_service")
-        try:
-            return store.recover_interrupted_runs()
-        finally:
-            store.close()
-
     def create_run(
         self,
         *,

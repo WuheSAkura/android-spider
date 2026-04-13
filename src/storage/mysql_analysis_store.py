@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any, cast
 
 from src.models.task_models import MySQLConfig, SSHTunnelConfig
@@ -23,6 +24,9 @@ SOURCE_TYPE_TO_RECORD_TYPE = {
 class MySQLAnalysisStore:
     """共享 MySQL 黑话字典与研判存储层。"""
 
+    _schema_ready_keys: set[str] = set()
+    _schema_lock = threading.Lock()
+
     def __init__(
         self,
         mysql_config: MySQLConfig,
@@ -36,7 +40,7 @@ class MySQLAnalysisStore:
     def connect(self) -> None:
         self.run_store.connect()
         self.connection = self.run_store.connection
-        self._ensure_tables()
+        self._ensure_schema_ready()
 
     def close(self) -> None:
         self.run_store.close()
@@ -1027,6 +1031,17 @@ class MySQLAnalysisStore:
                 str(row.get("updated_at") or ""),
             ),
         )
+
+    def _ensure_schema_ready(self) -> None:
+        cache_key = self.run_store._schema_cache_key()
+        if cache_key in self._schema_ready_keys:
+            return
+
+        with self._schema_lock:
+            if cache_key in self._schema_ready_keys:
+                return
+            self._ensure_tables()
+            self._schema_ready_keys.add(cache_key)
 
     def _ensure_tables(self) -> None:
         cursor = self._cursor()

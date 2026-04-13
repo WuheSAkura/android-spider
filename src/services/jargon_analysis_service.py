@@ -36,13 +36,6 @@ class JargonAnalysisService:
         self.store_factory = SharedStoreFactory(self.settings_service)
         self.batch_size = 10
 
-    def bootstrap(self) -> int:
-        store = self._open_store()
-        try:
-            return store.recover_interrupted_jargon_tasks()
-        finally:
-            store.close()
-
     def list_source_datasets(self) -> list[dict[str, Any]]:
         store = self._open_store()
         try:
