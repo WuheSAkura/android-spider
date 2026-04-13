@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -114,13 +115,13 @@ def list_task_templates() -> list[TaskTemplateResponse]:
 
 @app.get("/api/settings", response_model=AppSettingsPayload)
 def get_settings() -> AppSettingsPayload:
-    return AppSettingsPayload(**settings_service.get_settings().to_dict())
+    return AppSettingsPayload(**asdict(settings_service.get_settings()))
 
 
 @app.put("/api/settings", response_model=AppSettingsPayload)
 def save_settings(payload: AppSettingsPayload) -> AppSettingsPayload:
     settings = settings_service.save_settings(AppSettings(**payload.model_dump()))
-    return AppSettingsPayload(**settings.to_dict())
+    return AppSettingsPayload(**asdict(settings))
 
 
 @app.get("/api/runs", response_model=list[RunSummaryResponse])

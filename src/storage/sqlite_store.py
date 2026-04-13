@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src.models.collected_record import CollectedRecord
+from src.utils.exceptions import StorageError
 from src.utils.time_utils import format_datetime
 
 
@@ -87,6 +88,9 @@ class SQLiteStore:
                 format_datetime(None),
             ),
         )
+        if cursor.lastrowid is None:
+            cursor.close()
+            raise StorageError("SQLite 创建任务记录失败，未返回主键。")
         run_id = int(cursor.lastrowid)
         self.connection.commit()
         cursor.close()

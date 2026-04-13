@@ -10,6 +10,14 @@ from src.utils.exceptions import ConfigError
 SelectorValue = str | dict[str, Any]
 
 
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(slots=True)
 class MySQLConfig:
     host: str = "127.0.0.1"
@@ -32,10 +40,74 @@ class MySQLConfig:
             charset=str(data.get("charset", "utf8mb4")),
         )
 
+    def with_endpoint(self, host: str, port: int) -> "MySQLConfig":
+        return MySQLConfig(
+            host=host,
+            port=port,
+            user=self.user,
+            password=self.password,
+            database=self.database,
+            charset=self.charset,
+        )
+
+
+@dataclass(slots=True)
+class SSHTunnelConfig:
+    enabled: bool = False
+    host: str = ""
+    port: int = 22
+    user: str = ""
+    password: str = ""
+    local_port: int = 13306
+    remote_host: str = "127.0.0.1"
+    remote_port: int = 3306
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "SSHTunnelConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=_to_bool(data.get("enabled", False)),
+            host=str(data.get("host", "")),
+            port=int(data.get("port", 22)),
+            user=str(data.get("user", "")),
+            password=str(data.get("password", "")),
+            local_port=int(data.get("local_port", 13306)),
+            remote_host=str(data.get("remote_host", "127.0.0.1")),
+            remote_port=int(data.get("remote_port", 3306)),
+        )
+
+
+@dataclass(slots=True)
+class MinIOConfig:
+    enabled: bool = False
+    public_url: str = ""
+    endpoint: str = ""
+    access_key: str = ""
+    secret_key: str = ""
+    secure: bool = False
+    bucket: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "MinIOConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=_to_bool(data.get("enabled", False)),
+            public_url=str(data.get("public_url", "")),
+            endpoint=str(data.get("endpoint", "")),
+            access_key=str(data.get("access_key", "")),
+            secret_key=str(data.get("secret_key", "")),
+            secure=_to_bool(data.get("secure", False)),
+            bucket=str(data.get("bucket", data.get("bucket_name", ""))),
+        )
+
 
 @dataclass(slots=True)
 class StorageConfig:
     mysql: MySQLConfig = field(default_factory=MySQLConfig)
+    ssh: SSHTunnelConfig = field(default_factory=SSHTunnelConfig)
+    minio: MinIOConfig = field(default_factory=MinIOConfig)
     sqlite_path: Path = Path("data/local_runs.sqlite3")
     csv_dir: Path = Path("exports")
 
@@ -45,6 +117,8 @@ class StorageConfig:
             return cls()
         return cls(
             mysql=MySQLConfig.from_dict(data.get("mysql")),
+            ssh=SSHTunnelConfig.from_dict(data.get("ssh")),
+            minio=MinIOConfig.from_dict(data.get("minio")),
             sqlite_path=Path(data.get("sqlite_path", "data/local_runs.sqlite3")),
             csv_dir=Path(data.get("csv_dir", "exports")),
         )

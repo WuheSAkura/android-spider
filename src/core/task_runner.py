@@ -13,6 +13,8 @@ from src.core.device_manager import DeviceManager
 from src.core.driver import AndroidDriver
 from src.models.collected_record import CollectedRecord
 from src.models.task_models import TaskConfig
+from src.services.minio_service import MinIOArtifactService
+from src.services.ssh_tunnel_service import SSHTunnelService
 from src.storage.result_store import MySQLResultStore
 from src.storage.sqlite_store import SQLiteStore
 from src.utils.exceptions import ConfigError, TaskCancelledError
@@ -41,6 +43,7 @@ class TaskRunner:
         artifacts: ArtifactManager | None = None
         sqlite_store: SQLiteStore | None = None
         mysql_store: MySQLResultStore | None = None
+        ssh_tunnel: SSHTunnelService | None = None
 
         started_at = format_datetime(now_local())
         device_serial = "unknown"
@@ -58,7 +61,13 @@ class TaskRunner:
             if self.local_run_id is not None:
                 sqlite_store.mark_run_started(self.local_run_id, started_at=started_at, log_path=str(artifacts.log_file))
 
-            mysql_store = MySQLResultStore(self.task_config.storage.mysql, logger)
+            mysql_config = self.task_config.storage.mysql
+            if self.task_config.storage.ssh.enabled:
+                ssh_tunnel = SSHTunnelService(self.task_config.storage.ssh, logger)
+                ssh_tunnel.start()
+                mysql_config = mysql_config.with_endpoint("127.0.0.1", ssh_tunnel.local_port)
+
+            mysql_store = MySQLResultStore(mysql_config, logger)
             self.adapter.validate_config(self.task_config)
             self._check_cancelled(sqlite_store)
 
@@ -135,9 +144,24 @@ class TaskRunner:
             result["run_id"] = mysql_run_id
             if self.local_run_id is not None:
                 result["local_run_id"] = self.local_run_id
-            result_path = artifacts.write_json("result.json", result)
+            artifacts.write_json("result.json", result)
             mysql_store.save_collected_items(mysql_run_id, last_page_name, last_visible_texts)
             mysql_store.save_collected_records(mysql_run_id, collected_records)
+            uploaded_artifacts = []
+            try:
+                uploaded_artifacts = self._upload_artifacts(
+                    artifacts=artifacts,
+                    result=result,
+                    logger=logger,
+                )
+            except Exception as exc:
+                result.pop("artifact_uploads", None)
+                result.pop("artifact_upload_count", None)
+                result["artifact_upload_error"] = str(exc)
+                logger.exception("上传任务产物到 MinIO 失败。")
+            if uploaded_artifacts:
+                mysql_store.save_artifact_uploads(mysql_run_id, uploaded_artifacts)
+            result_path = artifacts.write_json("result.json", result)
             mysql_store.finish_run(
                 mysql_run_id,
                 status="success",
@@ -198,6 +222,8 @@ class TaskRunner:
                     logger.debug("停止应用失败，忽略。", exc_info=True)
             if mysql_store is not None:
                 mysql_store.close()
+            if ssh_tunnel is not None:
+                ssh_tunnel.close()
             if sqlite_store is not None:
                 sqlite_store.close()
 
@@ -286,6 +312,21 @@ class TaskRunner:
             if save_traceback and traceback_text:
                 artifacts.write_text("traceback.txt", traceback_text)
 
+        if artifacts is not None and mysql_store is not None and mysql_run_id is not None:
+            try:
+                uploaded_artifacts = self._upload_artifacts(
+                    artifacts=artifacts,
+                    result=result,
+                    logger=logger,
+                )
+                if uploaded_artifacts:
+                    mysql_store.save_artifact_uploads(mysql_run_id, uploaded_artifacts)
+                artifacts.write_json("result.json", result)
+            except Exception as exc:
+                result["artifact_upload_error"] = str(exc)
+                logger.exception("上传终止产物到 MinIO 失败。")
+                artifacts.write_json("result.json", result)
+
         finished_at = format_datetime(now_local())
         partial_records = partial_result.collected_records if partial_result is not None else []
 
@@ -370,6 +411,30 @@ class TaskRunner:
             except (TypeError, ValueError):
                 return 0
         return TaskRunner._extract_int(result.get(key))
+
+    def _upload_artifacts(
+        self,
+        *,
+        artifacts: ArtifactManager,
+        result: dict[str, Any],
+        logger,
+    ):
+        minio_service = MinIOArtifactService(self.task_config.storage.minio, logger)
+        if not minio_service.enabled():
+            return []
+
+        uploads = minio_service.plan_uploads(artifacts.run_dir, task_name=self.task_config.task_name)
+        if not uploads:
+            return []
+
+        result["artifact_upload_count"] = len(uploads)
+        result["artifact_uploads"] = [
+            {"name": item.relative_path, "url": item.public_url, "object_path": item.object_path}
+            for item in uploads
+        ]
+        artifacts.write_json("result.json", result)
+        minio_service.upload_records(uploads)
+        return uploads
 
 
 def time_sleep(seconds: float) -> None:

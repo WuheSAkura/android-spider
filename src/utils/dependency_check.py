@@ -7,6 +7,8 @@ DEPENDENCY_MODULES: tuple[tuple[str, str], ...] = (
     ("PyYAML", "yaml"),
     ("uiautomator2", "uiautomator2"),
     ("mysql-connector-python", "mysql.connector"),
+    ("minio", "minio"),
+    ("sshtunnel", "sshtunnel"),
     ("python-dotenv", "dotenv"),
     ("FastAPI", "fastapi"),
     ("uvicorn", "uvicorn"),

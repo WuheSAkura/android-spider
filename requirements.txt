@@ -5,3 +5,6 @@ fastapi>=0.115.0
 uvicorn>=0.30.0
 openai>=1.66.3
 python-dotenv>=1.0.1
+minio>=7.2.3
+sshtunnel>=0.4.0
+paramiko<4

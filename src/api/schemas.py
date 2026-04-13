@@ -37,6 +37,21 @@ class AppSettingsPayload(BaseModel):
     mysql_password: str = "123456"
     mysql_database: str = "android_spider"
     mysql_charset: str = "utf8mb4"
+    ssh_enabled: bool = False
+    ssh_host: str = ""
+    ssh_port: int = 22
+    ssh_user: str = ""
+    ssh_password: str = ""
+    ssh_local_port: int = 13306
+    ssh_remote_host: str = "127.0.0.1"
+    ssh_remote_port: int = 3306
+    minio_enabled: bool = False
+    minio_public_url: str = ""
+    minio_endpoint: str = ""
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_secure: bool = False
+    minio_bucket: str = ""
 
 
 class RunCreateRequest(BaseModel):

@@ -36,3 +36,20 @@ def load_project_env() -> Path | None:
 def get_env(name: str, default: str | None = None) -> str | None:
     load_project_env()
     return os.getenv(name, default)
+
+
+def get_env_int(name: str, default: int) -> int:
+    value = get_env(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(str(value))
+    except ValueError:
+        return default
+
+
+def get_env_bool(name: str, default: bool) -> bool:
+    value = get_env(name)
+    if value in (None, ""):
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}

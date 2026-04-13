@@ -40,6 +40,21 @@ export type AppSettings = {
   mysql_password: string;
   mysql_database: string;
   mysql_charset: string;
+  ssh_enabled: boolean;
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  ssh_password: string;
+  ssh_local_port: number;
+  ssh_remote_host: string;
+  ssh_remote_port: number;
+  minio_enabled: boolean;
+  minio_public_url: string;
+  minio_endpoint: string;
+  minio_access_key: string;
+  minio_secret_key: string;
+  minio_secure: boolean;
+  minio_bucket: string;
 };
 
 export type DoctorReport = {

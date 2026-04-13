@@ -281,9 +281,9 @@ QWEN_MODEL=qwen-plus
 
 > 注意：**不要将真实 API Key 提交到版本库。**
 
-### 重要说明：运行设置不在 `.env`
+### 重要说明：运行设置会优先读取本地设置，并在缺失时回退到 `.env`
 
-当前项目还有一类关键运行设置，并不通过 `.env` 管理，而是保存在本地 SQLite 的 `settings` 表中：
+当前项目的关键运行设置会优先保存在本地 SQLite 的 `settings` 表中；如果对应字段尚未保存，则会自动回退到项目根目录 `.env` 中的默认值：
 
 - `adb_path`
 - `output_dir`
@@ -293,13 +293,29 @@ QWEN_MODEL=qwen-plus
 - `mysql_password`
 - `mysql_database`
 - `mysql_charset`
+- `ssh_enabled`
+- `ssh_host`
+- `ssh_port`
+- `ssh_user`
+- `ssh_password`
+- `ssh_local_port`
+- `ssh_remote_host`
+- `ssh_remote_port`
+- `minio_enabled`
+- `minio_public_url`
+- `minio_endpoint`
+- `minio_access_key`
+- `minio_secret_key`
+- `minio_secure`
+- `minio_bucket`
 
 这些设置可通过以下方式维护：
 
 1. 启动桌面端后在“系统设置”页面填写
 2. 调用本地 API `PUT /api/settings`
+3. 在项目根目录 `.env` 中填写默认值
 
-因此，**`.env` 只负责 AI 研判配置，不负责设备路径和数据库地址。**
+当前推荐的云端持久化方式为：通过 `SSH` 隧道连接远端 MySQL，并将 `artifacts/` 下的 `result.json`、日志、截图、XML、可见文本等文件上传到 MinIO。
 
 ## 6. 准备 Android 设备
 
@@ -379,7 +395,7 @@ npm run dev
 3. 确认 `adb devices` 可看到在线设备
 4. 执行 `main.py doctor`
 5. 启动桌面端 `desktop/npm run dev`
-6. 在“系统设置”中填写 MySQL、ADB、输出目录
+6. 在“系统设置”中确认 MySQL、SSH、MinIO、ADB、输出目录配置
 7. 在“发起任务”页面选择模板和设备开始采集
 8. 完成后再进入黑话字典、黑话研判、命中溯源页面
 
@@ -405,7 +421,7 @@ npm run dev
 
 ### 示例 1：创建采集任务
 
-先确保本地 API 已启动，并且系统设置中已保存 MySQL 与 ADB 配置。
+先确保本地 API 已启动，并且系统设置中已保存 MySQL / SSH / MinIO / ADB 配置，或 `.env` 中已提供默认值。
 
 ```bash
 curl -X POST "http://127.0.0.1:8765/api/runs" \
@@ -590,12 +606,19 @@ curl -X POST "http://127.0.0.1:8765/api/jargon-analysis/tasks" \
 排查方向：
 
 - 当前采集执行链路会在运行时连接 MySQL，MySQL 并非可忽略项
+- 如果启用了 `ssh_enabled=true`，桌面端会先建立 SSH 隧道，再通过本地端口连接远端 MySQL
+- 如果启用了 `minio_enabled=true`，任务完成后会把 `artifacts/` 中的文件上传到 MinIO
 - 请确认“系统设置”中：
   - `mysql_host`
   - `mysql_port`
   - `mysql_user`
   - `mysql_password`
   - `mysql_database`
+  - `ssh_enabled`
+  - `ssh_host`
+  - `ssh_user`
+  - `minio_endpoint`
+  - `minio_bucket`
   配置正确
 - 检查 MySQL 服务是否可连接、账号是否有建库建表权限
 

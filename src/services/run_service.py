@@ -205,6 +205,25 @@ class RunService:
             }
         )
         storage_config["mysql"] = mysql_config
+        storage_config["ssh"] = {
+            "enabled": settings.ssh_enabled,
+            "host": settings.ssh_host,
+            "port": settings.ssh_port,
+            "user": settings.ssh_user,
+            "password": settings.ssh_password,
+            "local_port": settings.ssh_local_port,
+            "remote_host": settings.ssh_remote_host,
+            "remote_port": settings.ssh_remote_port,
+        }
+        storage_config["minio"] = {
+            "enabled": settings.minio_enabled,
+            "public_url": settings.minio_public_url,
+            "endpoint": settings.minio_endpoint,
+            "access_key": settings.minio_access_key,
+            "secret_key": settings.minio_secret_key,
+            "secure": settings.minio_secure,
+            "bucket": settings.minio_bucket,
+        }
         storage_config["sqlite_path"] = str(self.sqlite_path)
         raw_config["storage"] = storage_config
 

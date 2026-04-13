@@ -4,9 +4,10 @@ import json
 import logging
 from typing import Any, Iterable
 
+from src.models.artifact_upload import ArtifactUploadRecord
 from src.models.collected_record import CollectedRecord
 from src.models.task_models import MySQLConfig
-from src.utils.exceptions import DependencyError, DriverError
+from src.utils.exceptions import DependencyError, DriverError, StorageError
 from src.utils.time_utils import format_datetime
 
 mysql: Any | None
@@ -31,16 +32,13 @@ class MySQLResultStore:
         if mysql is None:
             raise DependencyError("缺少 mysql-connector-python 依赖，请先安装 requirements.txt。")
         mysql_module = mysql
-        self._ensure_database()
-        self.connection = mysql_module.connect(
-            host=self.config.host,
-            port=self.config.port,
-            user=self.config.user,
-            password=self.config.password,
-            database=self.config.database,
-            charset=self.config.charset,
-            autocommit=True,
-        )
+        try:
+            self.connection = self._connect_database()
+        except mysql_module.Error as exc:
+            if getattr(exc, "errno", None) != 1049:
+                raise
+            self._ensure_database()
+            self.connection = self._connect_database()
         self._ensure_tables()
         self.logger.info("MySQL 已连接：%s:%s/%s", self.config.host, self.config.port, self.config.database)
 
@@ -135,6 +133,35 @@ class MySQLResultStore:
         )
         cursor.close()
 
+    def save_artifact_uploads(self, run_id: int, uploads: Iterable[ArtifactUploadRecord]) -> None:
+        rows = [
+            (
+                run_id,
+                item.relative_path,
+                str(item.local_path),
+                item.object_path,
+                item.public_url,
+                item.content_type,
+                item.file_size,
+                format_datetime(None),
+            )
+            for item in uploads
+        ]
+        if not rows:
+            return
+        cursor = self._cursor()
+        cursor.execute("DELETE FROM run_artifacts WHERE run_id = %s", (run_id,))
+        cursor.executemany(
+            """
+            INSERT INTO run_artifacts (
+                run_id, file_name, local_path, object_path, public_url, content_type, file_size, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            rows,
+        )
+        cursor.close()
+
     def close(self) -> None:
         if self.connection is not None:
             self.connection.close()
@@ -144,19 +171,29 @@ class MySQLResultStore:
         if mysql is None:
             raise DependencyError("缺少 mysql-connector-python 依赖，请先安装 requirements.txt。")
         mysql_module = mysql
-        server_connection = mysql_module.connect(
-            host=self.config.host,
-            port=self.config.port,
-            user=self.config.user,
-            password=self.config.password,
-            autocommit=True,
-        )
+        try:
+            server_connection = mysql_module.connect(
+                host=self.config.host,
+                port=self.config.port,
+                user=self.config.user,
+                password=self.config.password,
+                autocommit=True,
+            )
+        except mysql_module.Error as exc:
+            raise StorageError(f"MySQL 建库前连接失败：{exc}") from exc
+
         cursor = server_connection.cursor()
-        cursor.execute(
-            f"CREATE DATABASE IF NOT EXISTS `{self.config.database}` CHARACTER SET {self.config.charset} COLLATE {self.config.charset}_unicode_ci"
-        )
-        cursor.close()
-        server_connection.close()
+        try:
+            cursor.execute(
+                f"CREATE DATABASE IF NOT EXISTS `{self.config.database}` CHARACTER SET {self.config.charset} COLLATE {self.config.charset}_unicode_ci"
+            )
+        except mysql_module.Error as exc:
+            raise StorageError(
+                f"MySQL 数据库 `{self.config.database}` 不存在，且当前账号无权自动创建。请先在服务器上创建该数据库。"
+            ) from exc
+        finally:
+            cursor.close()
+            server_connection.close()
 
     def _ensure_tables(self) -> None:
         cursor = self._cursor()
@@ -211,7 +248,37 @@ class MySQLResultStore:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS run_artifacts (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                run_id BIGINT NOT NULL,
+                file_name VARCHAR(255) NOT NULL,
+                local_path TEXT NOT NULL,
+                object_path VARCHAR(512) NOT NULL,
+                public_url TEXT NOT NULL,
+                content_type VARCHAR(128) NOT NULL,
+                file_size BIGINT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                INDEX idx_run_artifacts_run_id (run_id)
+            )
+            """
+        )
         cursor.close()
+
+    def _connect_database(self):
+        if mysql is None:
+            raise DependencyError("缺少 mysql-connector-python 依赖，请先安装 requirements.txt。")
+        mysql_module = mysql
+        return mysql_module.connect(
+            host=self.config.host,
+            port=self.config.port,
+            user=self.config.user,
+            password=self.config.password,
+            database=self.config.database,
+            charset=self.config.charset,
+            autocommit=True,
+        )
 
     def _cursor(self):
         if self.connection is None:
