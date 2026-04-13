@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.core.selectors import Selector
 from src.core.ui_xml import extract_visible_texts_from_xml
@@ -11,8 +11,14 @@ from src.utils.exceptions import DependencyError, DriverError
 
 try:
     import uiautomator2 as u2  # type: ignore[import-untyped]
+    from uiautomator2 import exceptions as u2_exceptions  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover - 依赖检查由 doctor 命令负责
     u2 = None
+    u2_exceptions = None
+
+
+ELEMENT_ACTION_ATTEMPTS = 3
+ELEMENT_RETRY_SLEEP_SECONDS = 0.3
 
 
 class AndroidDriver:
@@ -50,22 +56,30 @@ class AndroidDriver:
         self.logger.info("已停止应用：%s", package_name)
 
     def click(self, selector: Selector, timeout: float = 10) -> None:
-        strategy, element = self._find_element(selector, timeout)
-        if strategy == "xpath":
-            element.click()
-        else:
-            element.click()
+        strategy = self._execute_element_action(
+            selector,
+            timeout=timeout,
+            action_name="点击",
+            action=lambda _strategy, element: element.click(),
+        )
         self.logger.info("点击成功，定位方式：%s", strategy)
 
     def input_text(self, selector: Selector, text: str, timeout: float = 10) -> None:
-        strategy, element = self._find_element(selector, timeout)
-        if strategy == "xpath" and hasattr(element, "set_text"):
-            element.set_text(text)
-        elif strategy != "xpath" and hasattr(element, "set_text"):
-            element.set_text(text)
-        else:
-            element.click()
-            self._require_device().send_keys(text, clear=True)
+        def perform_input(strategy: str, element: Any) -> None:
+            if strategy == "xpath" and hasattr(element, "set_text"):
+                element.set_text(text)
+            elif strategy != "xpath" and hasattr(element, "set_text"):
+                element.set_text(text)
+            else:
+                element.click()
+                self._require_device().send_keys(text, clear=True)
+
+        strategy = self._execute_element_action(
+            selector,
+            timeout=timeout,
+            action_name="输入文本",
+            action=perform_input,
+        )
         self.logger.info("输入文本成功，定位方式：%s", strategy)
 
     def send_keys(self, text: str, clear: bool = True) -> None:
@@ -102,7 +116,12 @@ class AndroidDriver:
 
     def wait_for(self, selector: Selector, timeout: float = 10) -> bool:
         try:
-            self._find_element(selector, timeout)
+            self._execute_element_action(
+                selector,
+                timeout=timeout,
+                action_name="等待元素",
+                action=lambda _strategy, _element: None,
+            )
         except DriverError:
             return False
         return True
@@ -141,16 +160,63 @@ class AndroidDriver:
         xml_content = hierarchy_xml or self.get_hierarchy_xml()
         return extract_visible_texts_from_xml(xml_content)
 
+    def _execute_element_action(
+        self,
+        selector: Selector,
+        *,
+        timeout: float,
+        action_name: str,
+        action: Callable[[str, Any], None],
+    ) -> str:
+        deadline = time.time() + max(timeout, 0.1)
+        last_error: Exception | None = None
+
+        for attempt in range(ELEMENT_ACTION_ATTEMPTS):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+
+            attempts_left = max(ELEMENT_ACTION_ATTEMPTS - attempt, 1)
+            lookup_timeout = max(remaining / attempts_left, 0.1)
+
+            try:
+                strategy, element = self._find_element(selector, lookup_timeout)
+                action(strategy, element)
+                return strategy
+            except DriverError as exc:
+                last_error = exc
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_element_error(exc):
+                    raise DriverError(f"{action_name}失败：{exc}") from exc
+                if attempt < ELEMENT_ACTION_ATTEMPTS - 1 and deadline - time.time() > 0:
+                    self._prepare_retryable_element_error(action_name, exc, attempt)
+
+            if attempt >= ELEMENT_ACTION_ATTEMPTS - 1:
+                break
+
+            sleep_seconds = min(ELEMENT_RETRY_SLEEP_SECONDS, max(deadline - time.time(), 0))
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+        if isinstance(last_error, DriverError):
+            raise last_error
+        if last_error is not None:
+            raise DriverError(f"{action_name}失败：{last_error}") from last_error
+        raise DriverError(f"{action_name}失败：未找到匹配元素")
+
     def _find_element(self, selector: Selector, timeout: float) -> tuple[str, Any]:
         self._ensure_device()
-        deadline = time.time() + timeout
+        deadline = time.time() + max(timeout, 0.1)
         last_error: str | None = None
 
         for strategy, value in selector.strategies():
-            remaining = max(0.5, deadline - time.time())
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
             element = self._get_element(strategy, value)
             try:
-                exists = element.wait(timeout=remaining) if strategy != "xpath" else element.wait(timeout=remaining)
+                exists = element.wait(timeout=remaining)
             except Exception as exc:
                 last_error = str(exc)
                 continue
@@ -179,6 +245,62 @@ class AndroidDriver:
     def _require_device(self) -> Any:
         self._ensure_device()
         return self.device
+
+    def _is_retryable_element_error(self, exc: Exception) -> bool:
+        if u2_exceptions is None:
+            return False
+
+        if isinstance(
+            exc,
+            (
+                u2_exceptions.UiObjectNotFoundError,
+                u2_exceptions.HTTPError,
+                u2_exceptions.ConnectError,
+                u2_exceptions.UiAutomationError,
+                u2_exceptions.SessionBrokenError,
+            ),
+        ):
+            return True
+
+        return isinstance(exc, u2_exceptions.RPCUnknownError) and any(
+            token in str(exc)
+            for token in (
+                "StaleObjectException",
+                "UiObjectNotFoundException",
+            )
+        )
+
+    def _prepare_retryable_element_error(self, action_name: str, exc: Exception, attempt: int) -> None:
+        if self._should_reset_uiautomator(exc):
+            self.logger.warning(
+                "%s遇到 uiautomator 瞬时异常，第 %s 次重试前重置服务：%s",
+                action_name,
+                attempt + 1,
+                exc,
+            )
+            self._reset_uiautomator()
+            return
+
+        self.logger.warning(
+            "%s遇到瞬时节点异常，准备重试（第 %s 次）：%s",
+            action_name,
+            attempt + 1,
+            exc,
+        )
+
+    def _should_reset_uiautomator(self, exc: Exception) -> bool:
+        if u2_exceptions is None:
+            return False
+
+        return isinstance(
+            exc,
+            (
+                u2_exceptions.HTTPError,
+                u2_exceptions.ConnectError,
+                u2_exceptions.UiAutomationError,
+                u2_exceptions.SessionBrokenError,
+            ),
+        )
 
     def _reset_uiautomator(self) -> None:
         device = self._require_device()

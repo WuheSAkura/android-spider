@@ -11,6 +11,7 @@ import {
   Keyword,
   KeywordCategory,
 } from "@/lib/api";
+import { usePersistentState } from "@/lib/persistentState";
 
 type MatchFilters = {
   sourceType: JargonSourceType;
@@ -32,6 +33,37 @@ const DEFAULT_FILTERS: MatchFilters = {
   minConfidence: "",
 };
 
+function normalizeHitTracingFilters(
+  currentFilters: MatchFilters,
+  sources: JargonSourceDataset[],
+  categories: KeywordCategory[],
+): MatchFilters {
+  const filteredSources = sources.filter((item) => item.source_type === currentFilters.sourceType);
+  const selectedCategory = categories.find((item) => item.id === currentFilters.categoryId) ?? null;
+  const selectedSubcategory =
+    selectedCategory?.subcategories.find((item) => item.id === currentFilters.subcategoryId) ?? null;
+  const keywordOptions =
+    selectedSubcategory !== null
+      ? selectedSubcategory.keywords
+      : selectedCategory !== null
+        ? selectedCategory.keywords
+        : categories.flatMap((item) => item.keywords);
+
+  return {
+    ...currentFilters,
+    taskId:
+      currentFilters.taskId !== null && filteredSources.some((item) => item.source_task_id === currentFilters.taskId)
+        ? currentFilters.taskId
+        : null,
+    categoryId: selectedCategory?.id ?? null,
+    subcategoryId: selectedSubcategory?.id ?? null,
+    keywordId:
+      currentFilters.keywordId !== null && keywordOptions.some((item) => item.id === currentFilters.keywordId)
+        ? currentFilters.keywordId
+        : null,
+  };
+}
+
 function formatMatchConfidence(value: number): string {
   return `${Math.round(value)}%`;
 }
@@ -44,8 +76,8 @@ export default function HitTracingPage(): React.JSX.Element {
   const [sources, setSources] = useState<JargonSourceDataset[]>([]);
   const [categories, setCategories] = useState<KeywordCategory[]>([]);
   const [records, setRecords] = useState<HitTracingRecordSummary[]>([]);
-  const [filters, setFilters] = useState<MatchFilters>(DEFAULT_FILTERS);
-  const [appliedFilters, setAppliedFilters] = useState<MatchFilters>(DEFAULT_FILTERS);
+  const [filters, setFilters] = usePersistentState<MatchFilters>("pages/hit-tracing/filters", DEFAULT_FILTERS);
+  const [appliedFilters, setAppliedFilters] = useState<MatchFilters>(() => filters);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
@@ -93,7 +125,10 @@ export default function HitTracingPage(): React.JSX.Element {
       setSources(sourceItems);
       setCategories(categoryItems);
       setError("");
-      await loadRecords(1, DEFAULT_FILTERS, false);
+      const nextFilters = normalizeHitTracingFilters(filters, sourceItems, categoryItems);
+      setFilters(nextFilters);
+      setAppliedFilters(nextFilters);
+      await loadRecords(1, nextFilters, false);
     } catch (caughtError) {
       setError((caughtError as Error).message);
     } finally {

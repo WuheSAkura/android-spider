@@ -7,29 +7,78 @@ import {
   formatSourceType,
   formatStatus,
   JargonSourceDataset,
+  JargonSourceType,
   JargonTask,
   JargonTaskResultItem,
   KeywordCategory,
 } from "@/lib/api";
+import { usePersistentState } from "@/lib/persistentState";
 
 type TaskResultsState = {
   task: JargonTask;
   items: JargonTaskResultItem[];
 } | null;
 
+type JargonAnalysisDraft = {
+  sourceType: JargonSourceType;
+  sourceTaskId: number | null;
+  categoryId: number | null;
+  subcategoryId: number | null;
+  keywordId: number | null;
+};
+
+const DEFAULT_JARGON_ANALYSIS_DRAFT: JargonAnalysisDraft = {
+  sourceType: "xianyu",
+  sourceTaskId: null,
+  categoryId: null,
+  subcategoryId: null,
+  keywordId: null,
+};
+
+function normalizeJargonAnalysisDraft(
+  currentDraft: JargonAnalysisDraft,
+  sources: JargonSourceDataset[],
+  categories: KeywordCategory[],
+): JargonAnalysisDraft {
+  const filteredSources = sources.filter((item) => item.source_type === currentDraft.sourceType);
+  const selectedCategory = categories.find((item) => item.id === currentDraft.categoryId) ?? categories[0] ?? null;
+  const selectedSubcategory =
+    selectedCategory?.subcategories.find((item) => item.id === currentDraft.subcategoryId) ??
+    selectedCategory?.subcategories[0] ??
+    null;
+  const keywordOptions = selectedSubcategory?.keywords ?? selectedCategory?.keywords ?? [];
+
+  return {
+    sourceType: currentDraft.sourceType,
+    sourceTaskId:
+      currentDraft.sourceTaskId !== null &&
+      filteredSources.some((item) => item.source_task_id === currentDraft.sourceTaskId)
+        ? currentDraft.sourceTaskId
+        : filteredSources[0]?.source_task_id ?? null,
+    categoryId: selectedCategory?.id ?? null,
+    subcategoryId: selectedSubcategory?.id ?? null,
+    keywordId:
+      currentDraft.keywordId !== null && keywordOptions.some((item) => item.id === currentDraft.keywordId)
+        ? currentDraft.keywordId
+        : keywordOptions[0]?.id ?? null,
+  };
+}
+
 export default function JargonAnalysisPage(): React.JSX.Element {
   const [sources, setSources] = useState<JargonSourceDataset[]>([]);
   const [categories, setCategories] = useState<KeywordCategory[]>([]);
   const [tasks, setTasks] = useState<JargonTask[]>([]);
-  const [selectedSourceType, setSelectedSourceType] = useState<"xianyu" | "xhs">("xianyu");
-  const [selectedSourceTaskId, setSelectedSourceTaskId] = useState<number | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
-  const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<number | null>(null);
-  const [selectedKeywordId, setSelectedKeywordId] = useState<number | null>(null);
+  const [draft, setDraft] = usePersistentState<JargonAnalysisDraft>(
+    "pages/jargon-analysis/filters",
+    DEFAULT_JARGON_ANALYSIS_DRAFT,
+  );
   const [taskResults, setTaskResults] = useState<TaskResultsState>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+
+  const { sourceType: selectedSourceType, sourceTaskId: selectedSourceTaskId } = draft;
+  const { categoryId: selectedCategoryId, subcategoryId: selectedSubcategoryId, keywordId: selectedKeywordId } = draft;
 
   const filteredSources = useMemo(
     () => sources.filter((item) => item.source_type === selectedSourceType),
@@ -70,17 +119,7 @@ export default function JargonAnalysisPage(): React.JSX.Element {
       setCategories(categoryItems);
       setTasks(taskData.items);
       setError("");
-
-      const firstSourceType = sourceItems[0]?.source_type ?? "xianyu";
-      setSelectedSourceType(firstSourceType);
-      const candidateSources = sourceItems.filter((item) => item.source_type === firstSourceType);
-      setSelectedSourceTaskId(candidateSources[0]?.source_task_id ?? null);
-
-      const firstCategory = categoryItems[0] ?? null;
-      setSelectedCategoryId(firstCategory?.id ?? null);
-      const firstSubcategory = firstCategory?.subcategories[0] ?? null;
-      setSelectedSubcategoryId(firstSubcategory?.id ?? null);
-      setSelectedKeywordId(firstSubcategory?.keywords[0]?.id ?? firstCategory?.keywords[0]?.id ?? null);
+      setDraft((currentDraft) => normalizeJargonAnalysisDraft(currentDraft, sourceItems, categoryItems));
     } catch (caughtError) {
       setError((caughtError as Error).message);
     } finally {
@@ -158,10 +197,13 @@ export default function JargonAnalysisPage(): React.JSX.Element {
                 <select
                   value={selectedSourceType}
                   onChange={(event) => {
-                    const nextType = event.target.value as "xianyu" | "xhs";
-                    setSelectedSourceType(nextType);
+                    const nextType = event.target.value as JargonSourceType;
                     const nextSource = sources.find((item) => item.source_type === nextType) ?? null;
-                    setSelectedSourceTaskId(nextSource?.source_task_id ?? null);
+                    setDraft((currentDraft) => ({
+                      ...currentDraft,
+                      sourceType: nextType,
+                      sourceTaskId: nextSource?.source_task_id ?? null,
+                    }));
                   }}
                 >
                   <option value="xianyu">闲鱼</option>
@@ -173,7 +215,12 @@ export default function JargonAnalysisPage(): React.JSX.Element {
                 <span>数据源任务</span>
                 <select
                   value={selectedSourceTaskId ?? ""}
-                  onChange={(event) => setSelectedSourceTaskId(Number(event.target.value || 0) || null)}
+                  onChange={(event) =>
+                    setDraft((currentDraft) => ({
+                      ...currentDraft,
+                      sourceTaskId: Number(event.target.value || 0) || null,
+                    }))
+                  }
                 >
                   {filteredSources.length === 0 ? <option value="">暂无可分析数据</option> : null}
                   {filteredSources.map((item) => (
@@ -190,11 +237,14 @@ export default function JargonAnalysisPage(): React.JSX.Element {
                   value={selectedCategoryId ?? ""}
                   onChange={(event) => {
                     const nextCategoryId = Number(event.target.value || 0) || null;
-                    setSelectedCategoryId(nextCategoryId);
                     const nextCategory = categories.find((item) => item.id === nextCategoryId) ?? null;
                     const nextSubcategory = nextCategory?.subcategories[0] ?? null;
-                    setSelectedSubcategoryId(nextSubcategory?.id ?? null);
-                    setSelectedKeywordId(nextSubcategory?.keywords[0]?.id ?? nextCategory?.keywords[0]?.id ?? null);
+                    setDraft((currentDraft) => ({
+                      ...currentDraft,
+                      categoryId: nextCategoryId,
+                      subcategoryId: nextSubcategory?.id ?? null,
+                      keywordId: nextSubcategory?.keywords[0]?.id ?? nextCategory?.keywords[0]?.id ?? null,
+                    }));
                   }}
                 >
                   {categories.map((item) => (
@@ -211,10 +261,13 @@ export default function JargonAnalysisPage(): React.JSX.Element {
                   value={selectedSubcategoryId ?? ""}
                   onChange={(event) => {
                     const nextSubcategoryId = Number(event.target.value || 0) || null;
-                    setSelectedSubcategoryId(nextSubcategoryId);
                     const nextSubcategory =
                       selectedCategory?.subcategories.find((item) => item.id === nextSubcategoryId) ?? null;
-                    setSelectedKeywordId(nextSubcategory?.keywords[0]?.id ?? null);
+                    setDraft((currentDraft) => ({
+                      ...currentDraft,
+                      subcategoryId: nextSubcategoryId,
+                      keywordId: nextSubcategory?.keywords[0]?.id ?? null,
+                    }));
                   }}
                 >
                   {selectedCategory?.subcategories.map((item) => (
@@ -229,9 +282,14 @@ export default function JargonAnalysisPage(): React.JSX.Element {
                 <span>黑话词条</span>
                 <select
                   value={selectedKeywordId ?? ""}
-                  onChange={(event) => setSelectedKeywordId(Number(event.target.value || 0) || null)}
+                  onChange={(event) =>
+                    setDraft((currentDraft) => ({
+                      ...currentDraft,
+                      keywordId: Number(event.target.value || 0) || null,
+                    }))
+                  }
                 >
-                  {(selectedSubcategory?.keywords ?? []).map((item) => (
+                  {(selectedSubcategory?.keywords ?? selectedCategory?.keywords ?? []).map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.keyword} / {item.meaning}
                     </option>

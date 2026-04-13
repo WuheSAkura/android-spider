@@ -2,22 +2,84 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ACTIVE_STATUSES, api, DeviceInfo, DoctorReport, formatDateTime, RunSummary, TaskTemplate } from "@/lib/api";
+import { usePersistentState } from "@/lib/persistentState";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TaskForm } from "@/components/TaskForm";
+
+type TemplateDraftValues = Record<string, Record<string, string | number>>;
+
+type TaskFormDraft = {
+  selectedTemplateId: string;
+  selectedDeviceSerial: string;
+  templateValues: TemplateDraftValues;
+};
+
+const DEFAULT_TASK_FORM_DRAFT: TaskFormDraft = {
+  selectedTemplateId: "",
+  selectedDeviceSerial: "",
+  templateValues: {},
+};
+
+function buildTemplateValues(
+  template: TaskTemplate,
+  draftValues: Record<string, string | number> | undefined,
+): Record<string, string | number> {
+  const allowedKeys = new Set(template.fields.map((field) => field.key));
+  const nextValues: Record<string, string | number> = { ...template.default_options };
+
+  Object.entries(draftValues ?? {}).forEach(([key, value]) => {
+    if (allowedKeys.has(key)) {
+      nextValues[key] = value;
+    }
+  });
+
+  return nextValues;
+}
+
+function normalizeTemplateDraftValues(templates: TaskTemplate[], draftValues: TemplateDraftValues): TemplateDraftValues {
+  const nextDraftValues: TemplateDraftValues = {};
+  templates.forEach((template) => {
+    nextDraftValues[template.template_id] = buildTemplateValues(template, draftValues[template.template_id]);
+  });
+  return nextDraftValues;
+}
+
+function resolveTemplateId(templates: TaskTemplate[], currentTemplateId: string): string {
+  if (templates.some((template) => template.template_id === currentTemplateId)) {
+    return currentTemplateId;
+  }
+  return templates[0]?.template_id ?? "";
+}
+
+function resolveDeviceSerial(devices: DeviceInfo[], currentDeviceSerial: string): string {
+  if (currentDeviceSerial === "") {
+    return "";
+  }
+
+  const selectedDevice = devices.find((device) => device.serial === currentDeviceSerial);
+  if (selectedDevice === undefined || selectedDevice.state !== "device" || selectedDevice.busy) {
+    return "";
+  }
+
+  return currentDeviceSerial;
+}
 
 export default function DashboardPage(): React.JSX.Element {
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
   const [activeRuns, setActiveRuns] = useState<RunSummary[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const [selectedDeviceSerial, setSelectedDeviceSerial] = useState("");
-  const [values, setValues] = useState<Record<string, string | number>>({});
+  const [taskFormDraft, setTaskFormDraft] = usePersistentState<TaskFormDraft>(
+    "pages/dashboard/task-form",
+    DEFAULT_TASK_FORM_DRAFT,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [stoppingRunId, setStoppingRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [successRunId, setSuccessRunId] = useState<number | null>(null);
+
+  const { selectedTemplateId, selectedDeviceSerial, templateValues } = taskFormDraft;
 
   useEffect(() => {
     void loadInitialData();
@@ -31,6 +93,10 @@ export default function DashboardPage(): React.JSX.Element {
     () => templates.find((item) => item.template_id === selectedTemplateId) ?? null,
     [selectedTemplateId, templates],
   );
+  const values = useMemo<Record<string, string | number>>(
+    () => (selectedTemplate === null ? {} : buildTemplateValues(selectedTemplate, templateValues[selectedTemplate.template_id])),
+    [selectedTemplate, templateValues],
+  );
 
   async function loadInitialData(): Promise<void> {
     setLoading(true);
@@ -43,11 +109,11 @@ export default function DashboardPage(): React.JSX.Element {
       ]);
       setTemplates(templateData);
       applyRuntimeData(doctorData, runData);
-      if (templateData.length > 0) {
-        const nextTemplate = templateData[0];
-        setSelectedTemplateId(nextTemplate.template_id);
-        setValues(nextTemplate.default_options);
-      }
+      setTaskFormDraft((currentDraft) => ({
+        selectedTemplateId: resolveTemplateId(templateData, currentDraft.selectedTemplateId),
+        selectedDeviceSerial: resolveDeviceSerial(doctorData.devices, currentDraft.selectedDeviceSerial),
+        templateValues: normalizeTemplateDraftValues(templateData, currentDraft.templateValues),
+      }));
     } catch (caughtError) {
       setError((caughtError as Error).message);
     } finally {
@@ -72,11 +138,42 @@ export default function DashboardPage(): React.JSX.Element {
   }
 
   function handleTemplateChange(templateId: string): void {
-    setSelectedTemplateId(templateId);
     const template = templates.find((item) => item.template_id === templateId);
-    if (template !== undefined) {
-      setValues(template.default_options);
+    setTaskFormDraft((currentDraft) => ({
+      ...currentDraft,
+      selectedTemplateId: templateId,
+      templateValues:
+        template === undefined
+          ? currentDraft.templateValues
+          : {
+              ...currentDraft.templateValues,
+              [templateId]: buildTemplateValues(template, currentDraft.templateValues[templateId]),
+            },
+    }));
+  }
+
+  function handleDeviceChange(deviceSerial: string): void {
+    setTaskFormDraft((currentDraft) => ({
+      ...currentDraft,
+      selectedDeviceSerial: deviceSerial,
+    }));
+  }
+
+  function handleValueChange(key: string, value: string | number): void {
+    if (selectedTemplate === null) {
+      return;
     }
+
+    setTaskFormDraft((currentDraft) => ({
+      ...currentDraft,
+      templateValues: {
+        ...currentDraft.templateValues,
+        [selectedTemplate.template_id]: {
+          ...buildTemplateValues(selectedTemplate, currentDraft.templateValues[selectedTemplate.template_id]),
+          [key]: value,
+        },
+      },
+    }));
   }
 
   async function handleRun(runMode: "normal" | "light_smoke"): Promise<void> {
@@ -93,7 +190,10 @@ export default function DashboardPage(): React.JSX.Element {
         adapter_options: values,
       });
       setSuccessRunId(run.id);
-      setSelectedDeviceSerial("");
+      setTaskFormDraft((currentDraft) => ({
+        ...currentDraft,
+        selectedDeviceSerial: "",
+      }));
       await loadRuntimeData();
     } catch (caughtError) {
       const message = (caughtError as Error).message;
@@ -169,8 +269,8 @@ export default function DashboardPage(): React.JSX.Element {
             values={values}
             submitting={submitting}
             onTemplateChange={handleTemplateChange}
-            onDeviceChange={setSelectedDeviceSerial}
-            onValueChange={(key, value) => setValues((current) => ({ ...current, [key]: value }))}
+            onDeviceChange={handleDeviceChange}
+            onValueChange={handleValueChange}
             onRun={handleRun}
           />
 

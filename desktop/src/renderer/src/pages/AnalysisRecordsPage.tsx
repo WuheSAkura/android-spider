@@ -11,14 +11,44 @@ import {
   JargonSourceRecord,
   JargonSourceType,
 } from "@/lib/api";
+import { usePersistentState } from "@/lib/persistentState";
+
+type AnalysisRecordsDraft = {
+  sourceType: JargonSourceType;
+  taskId: number | null;
+  search: string;
+  matchedOnly: boolean;
+};
+
+const DEFAULT_ANALYSIS_RECORDS_DRAFT: AnalysisRecordsDraft = {
+  sourceType: "xianyu",
+  taskId: null,
+  search: "",
+  matchedOnly: false,
+};
+
+function normalizeAnalysisRecordsDraft(
+  currentDraft: AnalysisRecordsDraft,
+  sources: JargonSourceDataset[],
+): AnalysisRecordsDraft {
+  const filteredSources = sources.filter((item) => item.source_type === currentDraft.sourceType);
+
+  return {
+    ...currentDraft,
+    taskId:
+      currentDraft.taskId !== null && filteredSources.some((item) => item.source_task_id === currentDraft.taskId)
+        ? currentDraft.taskId
+        : filteredSources[0]?.source_task_id ?? null,
+  };
+}
 
 export default function AnalysisRecordsPage(): React.JSX.Element {
   const [sources, setSources] = useState<JargonSourceDataset[]>([]);
   const [records, setRecords] = useState<JargonSourceRecord[]>([]);
-  const [selectedSourceType, setSelectedSourceType] = useState<JargonSourceType>("xianyu");
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
-  const [matchedOnly, setMatchedOnly] = useState(false);
+  const [draft, setDraft] = usePersistentState<AnalysisRecordsDraft>(
+    "pages/analysis-records/filters",
+    DEFAULT_ANALYSIS_RECORDS_DRAFT,
+  );
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
@@ -26,6 +56,8 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
   const [selectedRecord, setSelectedRecord] = useState<JargonSourceRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const { sourceType: selectedSourceType, taskId: selectedTaskId, search, matchedOnly } = draft;
 
   const filteredSources = useMemo(
     () => sources.filter((item) => item.source_type === selectedSourceType),
@@ -44,9 +76,7 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
     try {
       const data = await api.listJargonSources();
       setSources(data);
-      const firstXianyu = data.find((item) => item.source_type === "xianyu") ?? data[0] ?? null;
-      setSelectedSourceType(firstXianyu?.source_type ?? "xianyu");
-      setSelectedTaskId(firstXianyu?.source_task_id ?? null);
+      setDraft((currentDraft) => normalizeAnalysisRecordsDraft(currentDraft, data));
       setError("");
     } catch (caughtError) {
       setError((caughtError as Error).message);
@@ -106,9 +136,12 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
               value={selectedSourceType}
               onChange={(event) => {
                 const nextType = event.target.value as JargonSourceType;
-                setSelectedSourceType(nextType);
                 const nextSource = sources.find((item) => item.source_type === nextType) ?? null;
-                setSelectedTaskId(nextSource?.source_task_id ?? null);
+                setDraft((currentDraft) => ({
+                  ...currentDraft,
+                  sourceType: nextType,
+                  taskId: nextSource?.source_task_id ?? null,
+                }));
                 setPage(1);
               }}
             >
@@ -122,7 +155,10 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
             <select
               value={selectedTaskId ?? ""}
               onChange={(event) => {
-                setSelectedTaskId(Number(event.target.value || 0) || null);
+                setDraft((currentDraft) => ({
+                  ...currentDraft,
+                  taskId: Number(event.target.value || 0) || null,
+                }));
                 setPage(1);
               }}
             >
@@ -137,7 +173,16 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
 
           <label className="field">
             <span>搜索标题/正文</span>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="输入关键词" />
+            <input
+              value={search}
+              onChange={(event) =>
+                setDraft((currentDraft) => ({
+                  ...currentDraft,
+                  search: event.target.value,
+                }))
+              }
+              placeholder="输入关键词"
+            />
           </label>
 
           <label className="field">
@@ -145,7 +190,10 @@ export default function AnalysisRecordsPage(): React.JSX.Element {
             <select
               value={matchedOnly ? "matched" : "all"}
               onChange={(event) => {
-                setMatchedOnly(event.target.value === "matched");
+                setDraft((currentDraft) => ({
+                  ...currentDraft,
+                  matchedOnly: event.target.value === "matched",
+                }));
                 setPage(1);
               }}
             >
